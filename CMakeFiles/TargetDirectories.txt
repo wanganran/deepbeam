@@ -1,0 +1,3 @@
+/home/pi/Documents/hearingaid/CMakeFiles/rebuild_cache.dir
+/home/pi/Documents/hearingaid/CMakeFiles/beamform_mic_array.dir
+/home/pi/Documents/hearingaid/CMakeFiles/edit_cache.dir
