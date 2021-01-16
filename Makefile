@@ -39,19 +39,19 @@ cmake_force:
 SHELL = /bin/sh
 
 # The CMake executable.
-CMAKE_COMMAND = /usr/bin/cmake
+CMAKE_COMMAND = /usr/local/bin/cmake
 
 # The command to remove a file.
-RM = /usr/bin/cmake -E remove -f
+RM = /usr/local/bin/cmake -E remove -f
 
 # Escaping for special characters.
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /home/pi/Documents/hearingaid
+CMAKE_SOURCE_DIR = /home/anranw/Projects/deepbeam
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /home/pi/Documents/hearingaid
+CMAKE_BINARY_DIR = /home/anranw/Projects/deepbeam
 
 #=============================================================================
 # Targets provided globally by CMake.
@@ -59,7 +59,7 @@ CMAKE_BINARY_DIR = /home/pi/Documents/hearingaid
 # Special rule for the target rebuild_cache
 rebuild_cache:
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --cyan "Running CMake to regenerate build system..."
-	/usr/bin/cmake -S$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR)
+	/usr/local/bin/cmake -S$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR)
 .PHONY : rebuild_cache
 
 # Special rule for the target rebuild_cache
@@ -70,7 +70,7 @@ rebuild_cache/fast: rebuild_cache
 # Special rule for the target edit_cache
 edit_cache:
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --cyan "No interactive CMake dialog available..."
-	/usr/bin/cmake -E echo No\ interactive\ CMake\ dialog\ available.
+	/usr/local/bin/cmake -E echo No\ interactive\ CMake\ dialog\ available.
 .PHONY : edit_cache
 
 # Special rule for the target edit_cache
@@ -80,9 +80,9 @@ edit_cache/fast: edit_cache
 
 # The main all target
 all: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/pi/Documents/hearingaid/CMakeFiles /home/pi/Documents/hearingaid/CMakeFiles/progress.marks
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/anranw/Projects/deepbeam/CMakeFiles /home/anranw/Projects/deepbeam/CMakeFiles/progress.marks
 	$(MAKE) -f CMakeFiles/Makefile2 all
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/pi/Documents/hearingaid/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/anranw/Projects/deepbeam/CMakeFiles 0
 .PHONY : all
 
 # The main clean target
@@ -123,33 +123,6 @@ beamform_mic_array/fast:
 	$(MAKE) -f CMakeFiles/beamform_mic_array.dir/build.make CMakeFiles/beamform_mic_array.dir/build
 .PHONY : beamform_mic_array/fast
 
-main.o: main.cpp.o
-
-.PHONY : main.o
-
-# target to build an object file
-main.cpp.o:
-	$(MAKE) -f CMakeFiles/beamform_mic_array.dir/build.make CMakeFiles/beamform_mic_array.dir/main.cpp.o
-.PHONY : main.cpp.o
-
-main.i: main.cpp.i
-
-.PHONY : main.i
-
-# target to preprocess a source file
-main.cpp.i:
-	$(MAKE) -f CMakeFiles/beamform_mic_array.dir/build.make CMakeFiles/beamform_mic_array.dir/main.cpp.i
-.PHONY : main.cpp.i
-
-main.s: main.cpp.s
-
-.PHONY : main.s
-
-# target to generate assembly for a file
-main.cpp.s:
-	$(MAKE) -f CMakeFiles/beamform_mic_array.dir/build.make CMakeFiles/beamform_mic_array.dir/main.cpp.s
-.PHONY : main.cpp.s
-
 mic_array.o: mic_array.cpp.o
 
 .PHONY : mic_array.o
@@ -176,6 +149,33 @@ mic_array.s: mic_array.cpp.s
 mic_array.cpp.s:
 	$(MAKE) -f CMakeFiles/beamform_mic_array.dir/build.make CMakeFiles/beamform_mic_array.dir/mic_array.cpp.s
 .PHONY : mic_array.cpp.s
+
+offline.o: offline.cpp.o
+
+.PHONY : offline.o
+
+# target to build an object file
+offline.cpp.o:
+	$(MAKE) -f CMakeFiles/beamform_mic_array.dir/build.make CMakeFiles/beamform_mic_array.dir/offline.cpp.o
+.PHONY : offline.cpp.o
+
+offline.i: offline.cpp.i
+
+.PHONY : offline.i
+
+# target to preprocess a source file
+offline.cpp.i:
+	$(MAKE) -f CMakeFiles/beamform_mic_array.dir/build.make CMakeFiles/beamform_mic_array.dir/offline.cpp.i
+.PHONY : offline.cpp.i
+
+offline.s: offline.cpp.s
+
+.PHONY : offline.s
+
+# target to generate assembly for a file
+offline.cpp.s:
+	$(MAKE) -f CMakeFiles/beamform_mic_array.dir/build.make CMakeFiles/beamform_mic_array.dir/offline.cpp.s
+.PHONY : offline.cpp.s
 
 webrtc_beamform.o: webrtc_beamform.cpp.o
 
@@ -213,12 +213,12 @@ help:
 	@echo "... rebuild_cache"
 	@echo "... beamform_mic_array"
 	@echo "... edit_cache"
-	@echo "... main.o"
-	@echo "... main.i"
-	@echo "... main.s"
 	@echo "... mic_array.o"
 	@echo "... mic_array.i"
 	@echo "... mic_array.s"
+	@echo "... offline.o"
+	@echo "... offline.i"
+	@echo "... offline.s"
 	@echo "... webrtc_beamform.o"
 	@echo "... webrtc_beamform.i"
 	@echo "... webrtc_beamform.s"

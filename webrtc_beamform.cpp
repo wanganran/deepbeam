@@ -2,7 +2,7 @@
 
 const float EPS=0.000001;
 const float MAX_DIST=1000;
-
+const int SUBBAND=3;
 static webrtc::SphericalPointf get_dir(float angle){
     return webrtc::SphericalPointf(angle, 0, MAX_DIST);
 }
@@ -15,14 +15,14 @@ bool webrtc_beamform::init_beamform(float initial_angle, const audio_config_t& l
 
     beamformer=new webrtc::NonlinearBeamformer(mics);
 
-    beamformer->InitializeF(buffer_size/3, layout.sampling_rate/3);
+    beamformer->InitializeF(buffer_size/SUBBAND, layout.sampling_rate/SUBBAND);
     
     auto dir=get_dir(initial_angle);
     beamformer->AimAt(dir);
 
-    input_3b=new webrtc::ChannelBuffer<float>(buffer_size, N, 3);
+    input_3b=new webrtc::ChannelBuffer<float>(buffer_size, N, SUBBAND);
 
-    output_3b=new webrtc::ChannelBuffer<float>(buffer_size, layout.num_out, 3);
+    output_3b=new webrtc::ChannelBuffer<float>(buffer_size, layout.num_out, SUBBAND);
 
     input_1b=new webrtc::ChannelBuffer<float>(buffer_size, N);
 
@@ -50,11 +50,11 @@ bool webrtc_beamform::process_beamform(float* input, float* output){
     int out_channel=output_1b->num_channels();
     
 
-    filterbank[0].Synthesis(output_3b->bands(0), buffer_size/3, output_1b->bands(0)[0]);
+    filterbank[0].Synthesis(output_3b->bands(0), buffer_size/SUBBAND, output_1b->bands(0)[0]);
     for(int i=0;i<out_channel;i++){
         float* dest=output_1b->bands(0)[0];
         for(int j=0;j<buffer_size;j++)
-            output[j*out_channel+i]=dest[j]*2;
+            output[j*out_channel+i]=dest[j];
     }
     return true;
 }

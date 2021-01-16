@@ -4,10 +4,10 @@ project(beamform_mic_array)
 set(CMAKE_CXX_STANDARD 17)
 link_directories("/usr/local/lib")
 include_directories("/usr/local/include")
-include_directories("/home/pi/Projects/webrtc-audio-processing")
+include_directories("../webrtc-audio-processing")
 
-add_executable(beamform_mic_array main.cpp webrtc_beamform.cpp mic_array.cpp)
+add_executable(beamform_mic_array offline.cpp webrtc_beamform.cpp mic_array.cpp)
 
 #SET(CMAKE_CXX_FLAGS "-DASIO_STANDALONE -Wall -fsanitize=address -static-libasan -O3")
 SET(CMAKE_CXX_FLAGS "-DASIO_STANDALONE -Wall -O3")
-target_link_libraries(beamform_mic_array pthread portaudio /home/pi/Projects/webrtc-audio-processing/build/webrtc/modules/audio_processing/libwebrtc_audio_processing.so /home/pi/Projects/webrtc-audio-processing/build/webrtc/libwebrtc.a)
+target_link_libraries(beamform_mic_array pthread portaudio sndfile /home/anranw/Projects/webrtc-audio-processing/build/webrtc/modules/audio_processing/libwebrtc_audio_processing.so /home/anranw/Projects/webrtc-audio-processing/build/webrtc/libwebrtc.a)
