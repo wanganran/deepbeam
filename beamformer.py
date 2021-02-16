@@ -10,6 +10,7 @@ from scipy.io import wavfile
 from scipy import signal as sg
 import numpy.matlib as npm
 import os
+from util import normalize
 
 def stab(mat, theta, num_channels):
     d = np.power(np.array(10, dtype=np.complex64) , np.arange( - num_channels, 0, dtype=np.float))
@@ -194,8 +195,9 @@ class WebrtcBeamformer:
         path=self.temp_folder+'/original.wav'
         dest=self.temp_folder+'/output.wav'
         wavfile.write(path, 48000, signal)
-        os.system(self.webrtc_path+' '+ path + ' ' + str(int(angle*180/np.pi+180)) + ' ' + self.temp_folder+'/layout.txt ' + dest + ' ' + str(self.buffer_size))
-        return wavfile.read(dest)[1]
+        os.system(self.webrtc_path+' '+ path + ' ' + str(int(angle*180/np.pi+90)) + ' ' + self.temp_folder+'/layout.txt ' + dest + ' ' + str(self.buffer_size))
+        # normalize
+        return normalize(wavfile.read(dest)[1])
 
     
 class OnlineMVDRBeamformer:
