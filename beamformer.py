@@ -175,6 +175,7 @@ class minimum_variance_distortioless_response:
             enhanced_spectrum[:, f] = np.sum(np.conjugate(beamformer[:, :, f]).T*complex_spectrum[:, :, f], axis=0)
         return spec2wav(enhanced_spectrum, self.sampling_frequency, self.fft_length, self.fft_length, self.fft_shift)        
         
+
 class WebrtcBeamformer:
     def __init__(self, buffer_size, mic_array_layout, sr, webrtc_path, temp_folder):
         self.webrtc_path=webrtc_path
@@ -182,7 +183,8 @@ class WebrtcBeamformer:
         assert(sr==48000)
         self.buffer_size=buffer_size
         self.n_mic=mic_array_layout.shape[1]
-        self.mic_array_layout=mic_array_layout-np.tile(np.mean(mic_array_layout, axis=1).reshape((3,1)), (1,self.n_mic))
+        #self.mic_array_layout=mic_array_layout
+        self.mic_array_layout=mic_array_layout-np.tile(mic_array_layout[:,0].reshape((3,1)), (1,self.n_mic))
         print(mic_array_layout)
         # output layout
         f=open(temp_folder+'/layout.txt', 'w')
@@ -190,14 +192,19 @@ class WebrtcBeamformer:
             for j in range(2):
                 f.write("{0:.3f} ".format(self.mic_array_layout[j,i]))
         f.close()
+
+    def __normalize(self, signal, maximum):
+        return signal/np.max(np.abs(signal))*maximum
+    
     def process(self, signal, angle):
         # angle is in degree
         path=self.temp_folder+'/original.wav'
         dest=self.temp_folder+'/output.wav'
         wavfile.write(path, 48000, signal)
-        os.system(self.webrtc_path+' '+ path + ' ' + str(int(angle*180/np.pi+90)) + ' ' + self.temp_folder+'/layout.txt ' + dest + ' ' + str(self.buffer_size))
+        os.system(self.webrtc_path+' '+ path + ' ' + str(int(angle*180/np.pi)+180) + ' ' + self.temp_folder+'/layout.txt ' + dest + ' ' + str(self.buffer_size))
         # normalize
-        return normalize(wavfile.read(dest)[1])
+        return self.__normalize(wavfile.read(dest)[1][self.buffer_size//2:], 1)
+        #return wavfile.read(dest)[1][self.buffer_size//2:]
 
     
 class OnlineMVDRBeamformer:
@@ -205,7 +212,8 @@ class OnlineMVDRBeamformer:
         # mic_array_layout: [3, C]
         self.buffer_size=buffer_size
         self.n_mic=mic_array_layout.shape[1]
-        self.mic_array_layout=mic_array_layout-np.tile(np.mean(mic_array_layout, axis=1).reshape((3,1)), (1, self.n_mic))
+        #self.mic_array_layout=mic_array_layout
+        self.mic_array_layout=mic_array_layout-np.tile(mic_array_layout[:,0].reshape((3,1)), (1, self.n_mic))
         self.sr=sr
         self.V=V
         self.adaptive=adaptive

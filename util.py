@@ -1,6 +1,44 @@
 import numpy as np
 
 from scipy import signal
+import torch
+import torch.nn.functional as F
+
+EPS=1e-8
+
+
+def pow_p_norm(signal):
+    """Compute 2 Norm"""
+    return torch.pow(torch.norm(signal, p=2, dim=-1, keepdim=True), 2)
+
+def sdr(estimated, original):
+    target=pow_p_norm(original)
+    noise=pow_p_norm(estimated-original)
+    
+    sdr = 10 * torch.log10(target / (noise + EPS) + EPS)
+    return sdr.squeeze_(dim=-1)
+
+
+def pow_norm(s1, s2):
+    return torch.sum(s1 * s2, dim=-1, keepdim=True)
+
+
+# x: total; y_pred: output; y_true: gt
+def wsdr_loss(x, y_pred, y_true):
+    # x: [B, 1, L]
+
+    def sdr_fn(true, pred, eps=1e-8):
+        num = torch.sum(true * pred, dim=-1)
+        den = torch.norm(true, p=2, dim=-1) * torch.norm(pred, p=2, dim=-1)
+        return -(num / (den + EPS))
+
+    # true and estimated noise
+    z_true = x - y_true
+    z_pred = x - y_pred
+
+    a = torch.sum(y_true**2, dim=-1) / (torch.sum(y_true**2, dim=-1) + torch.sum(z_true**2, dim=-1) + EPS)
+    wSDR = a * sdr_fn(y_true, y_pred) + (1 - a) * sdr_fn(z_true, z_pred)
+    return torch.mean(wSDR)
 
 def si_sdr(estimated_signal, reference_signals, scaling=True):
     """
@@ -87,8 +125,8 @@ def dbto(x):
 def power(signal):
     return np.sum(np.abs(signal)**2)/signal.size
 
-def normalize(signal): # keep a std of 0.1 and min/max of +-1
-    return np.clip(signal/np.std(signal)*0.1, -1, 1)
+def normalize(signal): # keep a std of 0.05 and min/max of +-1
+    return np.clip(signal/np.std(signal)*0.05, -1, 1)
 
 def mix(signal, noise, target_snr_db):
     psig=power(signal)
