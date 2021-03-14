@@ -1,17 +1,20 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchcomplex.nn as cnn
-import torchcomplex.nn.functional as cF
 import numpy as np
 import importlib
 import complexcnn.modules
 importlib.reload(complexcnn.modules)
-from complexcnn.modules import ComplexConv1d, ComplexConvTranspose1d
+from complexcnn.modules import ComplexConv1d, ComplexConvTranspose1d, ComplexLinear
 import util
 importlib.reload(util)
+import asteroid
 #from util import si_sdr_loss
 
+def cMul(t1,t2):
+    real=t1[:,0]*t2[:,0]-t1[:,1]*t2[:,1]
+    imag=t1[:,1]*t2[:,0]+t1[:,0]*t2[:,1]
+    return torch.stack((real,imag),dim=1)
 
 def cSymRelu6(input, inplace=False):
     return F.relu6(input+3, inplace=inplace)-3
@@ -51,6 +54,7 @@ class CausalComplexConv1d(nn.Module):
         self.stride=stride
         self.pad=nn.ConstantPad1d((kernel_size*dilation-dilation+1-stride,0), 0)
         self.fullconv=fullconv
+        self.activation=nn.Tanh()
         if not fullconv:
             self.l1=ComplexConv1d(channel_in, channel_in, kernel_size, stride=stride, dilation=dilation, groups=channel_in, padding=0)
             self.l2=ComplexConv1d(channel_in, channel_out, 1)
@@ -58,7 +62,7 @@ class CausalComplexConv1d(nn.Module):
             self.l=ComplexConv1d(channel_in, channel_out, kernel_size, stride=stride, dilation=dilation, padding=0)
     def forward(self, x):
         if not self.fullconv:
-            return self.l2(cSymRelu6(self.l1(self.pad(x))))
+            return self.l2(self.activation(self.l1(self.pad(x))))
         else:
             return self.l(self.pad(x))
 
@@ -68,6 +72,7 @@ class CausalComplexConvTrans1d(nn.Module):
         self.kernel_size=kernel_size
         self.stride=stride
         self.fullconv=fullconv
+        self.activation=nn.Tanh()
         if not fullconv:
             self.l1=ComplexConv1d(channel_in, channel_out, 1)
             self.l2=ComplexConvTranspose1d(channel_out, channel_out, kernel_size, stride=stride, groups=channel_out)
@@ -76,12 +81,12 @@ class CausalComplexConvTrans1d(nn.Module):
             
     def forward(self, x):
         if not self.fullconv:
-            return self.l2(cSymRelu6(self.l1(x)))[..., self.kernel_size-self.stride:]
+            return self.l2(self.activation(self.l1(x)))[..., self.kernel_size-self.stride:]
         else:
             return self.l(x)[..., self.kernel_size-self.stride:]
     
 class SimpleNetwork(nn.Module):        
-    def __init__(self, in_channels, channels, kernel_size, reception, lstm_layers=2, depth=2, context=3, stride=2):
+    def __init__(self, in_channels, channels, kernel_size, reception, lstm_layers=2, depth=2, context=3, stride=2, wnet_reception=4, wnet_layers=4):
         super().__init__()
         
         # simple model
@@ -92,18 +97,30 @@ class SimpleNetwork(nn.Module):
         self.reception=reception
         self.context=context
         self.stride=stride
-        self.lstm=nn.GRU(input_size=channels, hidden_size=channels, num_layers=lstm_layers)
+        self.activation=nn.Tanh()
+        
+        #self.lstm=nn.GRU(input_size=channels, hidden_size=channels, num_layers=lstm_layers)
         #self.lstm=nn.LSTM(input_size=channels, hidden_size=channels, num_layers=lstm_layers) 
         
         # added wavenet-like convs
-        wnet_reception=4
-        wnet_layers=4
+        self.wnet_reception=wnet_reception
+        self.wnet_layers=wnet_layers
         
         self.wconvs=nn.ModuleList()
+        self.alayers=nn.ModuleList()
+        
         dilation=1
         for i in range(wnet_layers):
-            self.wconvs.append(CausalComplexConv1d(channels, channels, wnet_reception, stride=1, dilation=dilation, fullconv=True))
-            self.wconvs.append(CSymRelu6())
+            wconv=nn.ModuleList()
+            wconv.append(CausalComplexConv1d(channels, channels, wnet_reception, stride=1, dilation=dilation, fullconv=True))
+            wconv.append(self.activation)
+            self.wconvs.append(wconv)
+            
+            al=nn.ModuleList()
+            al.append(ComplexLinear(1, channels))
+            al.append(self.activation)
+            self.alayers.append(al) # B, C
+            
             dilation*=wnet_reception
         
         self.first=CausalComplexConv1d(in_channels, channels, reception)
@@ -111,27 +128,38 @@ class SimpleNetwork(nn.Module):
         for i in range(depth):
             encode=nn.ModuleDict()
             encode["conv"]=CausalComplexConv1d(channels, channels, kernel_size, stride=stride, fullconv=True)
-            encode["relu"]=CSymRelu6()
+            encode["relu"]=self.activation
             
             self.encoders.append(encode)
             
             decode=nn.ModuleDict()
             decode["conv"]=CausalComplexConvTrans1d(channels*2, channels, kernel_size, stride=stride) 
+            decode["relu"]=self.activation
             self.decoders.append(decode)
+            
+        self.loss_fn=asteroid.losses.pairwise_neg_sisdr 
 
-    def forward(self, mix:torch.Tensor):
+    def forward(self, mix:torch.Tensor, angle:torch.Tensor):
         # mix: [batch, channel, length]
         # mix=torch.view_as_complex(torch.stack((mix, mix-mix), dim=-1))
+        # angle: (B, 2)
+        
+        
         mix=toComplex(mix)
         x=self.first(mix)
+        x=self.activation(x)
         
         # attention
         x2=x # B, channels, L
-        
-        for layer in self.wconvs:
-            x2=layer(x2)
-        
-        x=x*x2
+        for i in range(self.wnet_layers):
+            xa=angle.view(-1,2,1)
+            for layer in self.alayers[i]:
+                xa=layer(xa)
+            for layer in self.wconvs[i]:
+                x2=layer(x2)
+            #print(x2.shape, xa.shape)
+            x2=cMul(x2, xa.unsqueeze(-1))
+        x=cMul(x,x2)
         
         saved=[x]
         
@@ -159,6 +187,7 @@ class SimpleNetwork(nn.Module):
             #x=x+skip
             x=torch.cat((x, skip), -2)
             x=decode["conv"](x)
+            x=decode["relu"](x)
         
         # last layer
         skip=saved.pop(-1)
@@ -168,6 +197,7 @@ class SimpleNetwork(nn.Module):
         return toReal(x)
     
     def loss(self, signal, gt, mix):
+        
         # less weight on first 0.5s
         '''
         total_len=signal.shape[-1]
@@ -177,5 +207,7 @@ class SimpleNetwork(nn.Module):
         return (l1*0.1+l2*0.5+l3)/total_len
         '''
         #return si_sdr_loss(signal, gt)
-        return F.l1_loss(signal[..., 24000:], gt[..., 24000:])
+        #return F.l1_loss(signal[..., 24000:], gt[..., 24000:])
         #return util.wsdr_loss(mix, signal, gt)
+        return torch.sum(self.loss_fn(signal, gt))
+    

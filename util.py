@@ -22,7 +22,6 @@ def sdr(estimated, original):
 def pow_norm(s1, s2):
     return torch.sum(s1 * s2, dim=-1, keepdim=True)
 
-
 # x: total; y_pred: output; y_true: gt
 def wsdr_loss(x, y_pred, y_true):
     # x: [B, 1, L]

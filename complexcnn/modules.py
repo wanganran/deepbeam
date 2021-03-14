@@ -3,6 +3,21 @@ import torch
 import torch.nn as nn
 import numpy as np
 
+class ComplexLinear(nn.Module):
+    def __init__(self, inputsize, outputsize, bias=True):
+        super(ComplexLinear,self).__init__()
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        ## Model components
+        self.re=nn.Linear(inputsize, outputsize)
+        self.im=nn.Linear(inputsize, outputsize)
+        
+    def forward(self, x): 
+        real=self.re(x[:,0])-self.im(x[:,1])
+        imag=self.re(x[:,1])+self.im(x[:,0])
+        output = torch.stack((real,imag),dim=1)
+        return output
+
 
 class ComplexConv1d(nn.Module):
     def __init__(self, in_channel, out_channel, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True):
