@@ -5,7 +5,7 @@ import numpy as np
 import importlib
 import complexcnn.modules
 importlib.reload(complexcnn.modules)
-from complexcnn.modules import ComplexConv1d, ComplexConvTranspose1d, ComplexLinear
+from complexcnn.modules import ComplexConv1d, ComplexConvTranspose1d, ComplexLinear, ComplexMultiLinear, ComplexSTFTWrapper
 import util
 importlib.reload(util)
 import asteroid
@@ -85,10 +85,98 @@ class CausalComplexConvTrans1d(nn.Module):
         else:
             return self.l(x)[..., self.kernel_size-self.stride:]
     
+class NSNet(nn.Module):
+    def __init__(self, in_channels, block_size, ff_size, batch_size):
+        super().__init__()
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        self.in_channels=in_channels
+        self.ff_size=ff_size
+        self.block_size=block_size
+        
+        self.act=nn.Tanh()
+        self.stft=ComplexSTFTWrapper(hop_length=block_size//2, win_length=block_size)
+        self.shuffle=ComplexLinear(in_channels, in_channels)
+        self.ff1=ComplexMultiLinear(in_channels, block_size//2, ff_size)
+        self.shuffle2=ComplexLinear(in_channels, in_channels)
+        self.ff2=ComplexMultiLinear(in_channels, ff_size, ff_size)
+        self.bottleneck=ComplexLinear(in_channels, 1)
+        self.rnn_r=nn.GRU(ff_size, ff_size, 2, batch_first=True)
+        self.rnn_i=nn.GRU(ff_size, ff_size, 2, batch_first=True)
+        self.expand=ComplexLinear(1, in_channels)
+        self.ff3=ComplexMultiLinear(in_channels, ff_size, ff_size)
+        self.ff4=ComplexMultiLinear(in_channels, ff_size, block_size//2)
+        
+        self.alayers=nn.ModuleList()
+        self.alayers.append(ComplexLinear(1, in_channels*block_size//2))
+        for i in range(3):
+            self.alayers.append(ComplexLinear(1, in_channels*ff_size))
+        
+        self.loss_fn=asteroid.losses.pairwise_neg_sisdr 
+        
+    def forward(self, mix:torch.Tensor, angle:torch.Tensor):
+        angle=angle.view(-1,2,1)
+        B=mix.shape[0]
+        
+        l0=self.stft.transform(mix) # B, 2, C, F, T
+        l1=l0[:,:,:,:self.block_size//2,:]
+        ori=l1
+        a1=self.alayers[0](angle)
+        a1=a1.view(-1,2,self.in_channels, self.block_size//2, 1)
+        l1=cMul(l1,a1)
+        l1=self.act(l1)
+        
+        l2=self.shuffle(l1.permute(0,1,3,4,2)) # -1,2,F,T,C
+        l2=l2.permute(0,1,4,3,2) # -1,2,C,T,F
+        l2=self.ff1(l2)
+        a2=self.alayers[1](angle)
+        a2=a2.view(-1,2,self.in_channels, 1, self.ff_size)
+        l2=cMul(l2,a2)
+        l2=self.act(l2)
+        l2=l2.permute(0, 1, 2, 4, 3) # -1, 2, C, F, T
+        
+        l3=self.shuffle2(l2.permute(0,1,3,4,2)) # -1,2,F,T,C
+        l3=l3.permute(0,1,4,3,2) # -1,2,C,T,F
+        l3=self.ff2(l3)
+        a3=self.alayers[2](angle)
+        a3=a3.view(-1,2, self.in_channels, 1, self.ff_size)
+        l3=cMul(l3,a3)
+        l3=self.act(l3)
+        l3=l3.permute(0, 1, 2, 4, 3) # -1, 2, C, F, T
+        
+        l4=l3.permute(0,1,3,4,2) # B,2,F,T,C
+        l4=self.bottleneck(l4).squeeze(-1).permute(0,1,3,2) # B, 2, T, F
+        
+        l5_r, _=self.rnn_r(l4[:,0]) # B, T, F
+        l5_i, _=self.rnn_i(l4[:,1])
+        l5=torch.stack((l5_r, l5_i), dim=1) # B,2,T,F
+        
+        l6=self.expand(l5.unsqueeze(-1)).permute(0,1,4,2,3)
+        l6=self.ff3(l6)
+        a6=self.alayers[3](angle)
+        a6=a6.view(-1, 2, self.in_channels, 1, self.ff_size)
+        l6=cMul(l6,a6)
+        l6=self.act(l6)
+        
+        l7=self.ff4(l6)
+        l7=self.act(l7) # B,2, C, T,F
+        l7=l7.permute(0,1,2, 4,3) # B,2,C,F,T
+        
+        result=cMul(ori, l7)
+        result=torch.sum(result, dim=2, keepdim=True) # B,2,1, F,T
+        result=torch.cat([result, l0[:,:,0:1,self.block_size//2:,:]], 3)
+        
+        return self.stft.reverse(result) # B, L
+       
+    def loss(self, signal, gt, mix):
+        
+        return torch.sum(self.loss_fn(signal, gt))   
+    
 class SimpleNetwork(nn.Module):        
     def __init__(self, in_channels, channels, kernel_size, reception, lstm_layers=2, depth=2, context=3, stride=2, wnet_reception=4, wnet_layers=4):
         super().__init__()
-        
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                 
         # simple model
         self.encoders=nn.ModuleList()
         self.decoders=nn.ModuleList()
