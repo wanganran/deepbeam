@@ -5,19 +5,26 @@ import numpy as np
 import importlib
 import complexcnn.modules
 importlib.reload(complexcnn.modules)
-from complexcnn.modules import ComplexConv1d, ComplexConvTranspose1d, ComplexLinear, ComplexMultiLinear, ComplexSTFTWrapper
+from complexcnn.modules import ComplexConv1d, ComplexConvTranspose1d, ComplexLinear, ComplexMultiLinear, ComplexSTFTWrapper, ComplexConv2d, cMul, toComplex, toReal, CausalComplexConv2d, CausalComplexConvTrans1d, CausalComplexConv1d
 import util
 importlib.reload(util)
 import asteroid
-#from util import si_sdr_loss
+from util import cudaMem
 
-def cMul(t1,t2):
-    real=t1[:,0]*t2[:,0]-t1[:,1]*t2[:,1]
-    imag=t1[:,1]*t2[:,0]+t1[:,0]*t2[:,1]
-    return torch.stack((real,imag),dim=1)
+
 
 def cSymRelu6(input, inplace=False):
     return F.relu6(input+3, inplace=inplace)-3
+
+def sineAct(input, inplace=False):
+    return torch.sin((F.relu6(input+3, inplace=inplace)/6*np.pi)-np.pi/2)
+
+class SineAct(nn.Module):
+    def __init__(self, inplace=False):
+        super().__init__()
+        self.inplace=inplace
+    def forward(self, x):
+        return sineAct(x, self.inplace)
 
 class CSymRelu6(nn.Module):
     def __init__(self, inplace=False):
@@ -39,54 +46,150 @@ def center_trim(tensor, reference):
         tensor = tensor[..., diff // 2:-(diff - diff // 2)]
     return tensor
 
-def toComplex(tensor):
-    return torch.stack((tensor, tensor-tensor), dim=1)
 
-def toReal(tensor):
-    return tensor[:,0,...]
 
-class CausalComplexConv1d(nn.Module):
-    def __init__(self, channel_in, channel_out, kernel_size, stride=1, dilation=1, fullconv=False):
+
+    
+class SpectrogramCRN(nn.Module):
+    def __init__(self, in_channels, mid_channels, freq_channels, final_channels, block_size, freq_kernel_size, time_kernel_size, n_conv):
         super().__init__()
-        # input is [batch, channel, length]
-        # depthwise + 1x1
-        self.kernel_size=kernel_size
-        self.stride=stride
-        self.pad=nn.ConstantPad1d((kernel_size*dilation-dilation+1-stride,0), 0)
-        self.fullconv=fullconv
-        self.activation=nn.Tanh()
-        if not fullconv:
-            self.l1=ComplexConv1d(channel_in, channel_in, kernel_size, stride=stride, dilation=dilation, groups=channel_in, padding=0)
-            self.l2=ComplexConv1d(channel_in, channel_out, 1)
-        else:
-            self.l=ComplexConv1d(channel_in, channel_out, kernel_size, stride=stride, dilation=dilation, padding=0)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        self.in_channels=in_channels
+        self.block_size=block_size
+        
+        self.act=nn.LeakyReLU(0.1)
+        self.stft=ComplexSTFTWrapper(hop_length=block_size//2, win_length=block_size)
+        
+        self.first_kernel=5
+        F=block_size//2-self.first_kernel+1
+        self.first=ComplexConv2d(in_channels, mid_channels, (self.first_kernel, self.first_kernel), padding=(0, self.first_kernel-1))
+        self.convs=nn.ModuleList()
+        for i in range(n_conv):
+            self.convs.append(CausalComplexConv2d(mid_channels, freq_channels, mid_channels, freq_kernel_size, time_kernel_size))
+        
+        self.last=ComplexConv2d(mid_channels, 1, (1,1)) # B, 2, 1, F, T
+        
+        F2=F-(freq_kernel_size-1)*n_conv
+        
+        self.rnn_r=nn.GRU(F2, F2, 2, batch_first=True)
+        self.rnn_i=nn.GRU(F2, F2, 2, batch_first=True)    
+        
+        self.final=ComplexLinear(F2, final_channels)
+        
+    def forward(self, mix:torch.Tensor):
+        l0=self.stft.transform(mix) # B, 2, C, F, T
+        l1=l0[:,:,:,:self.block_size//2,:]
+        
+        l2=self.first(l1)[:,:,:,:,:-self.first_kernel+1]
+        
+        for conv in self.convs:
+            l2=conv(l2)
+        l3=self.last(l2).permute(0,1,4,3,2).squeeze(-1)
+        l3_r=l3[:,0]
+        l3_i=l3[:,1]
+        
+        r2r_out = self.rnn_r(l3_r)[0]
+        r2i_out = self.rnn_i(l3_r)[0]
+        i2r_out = self.rnn_r(l3_i)[0]
+        i2i_out = self.rnn_i(l3_i)[0]
+        real_out = r2r_out - i2i_out
+        imag_out = i2r_out + r2i_out 
+        l4=torch.stack((real_out, imag_out), dim=1) # B,2,T,F
+        
+        return self.final(l4) # B,2,T,final
+        
+    def getStep(self):
+        return self.block_size//2
+    
+class CausalTCN(nn.Module):
+    def __init__(self, in_channels, out_channels, hidden_channels, dilation, kernel=5):
+        super().__init__()
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        self.layers=nn.ModuleList()
+        self.layers.append(CausalComplexConv1d(in_channels, hidden_channels, kernel, dilation=dilation))
+        self.layers.append(nn.LeakyReLU(0.1))
+        self.out=ComplexConv1d(hidden_channels, out_channels, 1)
+        
+        #self.out2=ComplexConv1d(hidden_channels, out_channels, 1)
+    
     def forward(self, x):
-        if not self.fullconv:
-            return self.l2(self.activation(self.l1(self.pad(x))))
-        else:
-            return self.l(self.pad(x))
-
-class CausalComplexConvTrans1d(nn.Module):
-    def __init__(self, channel_in, channel_out, kernel_size, stride=1, fullconv=False):
+        y=x
+        for l in self.layers:
+            y=l(y)
+        return x+self.out(y)
+        
+class FuseModel(nn.Module):
+    
+    def __init__(self, in_channels, reception, channels, hidden_channels, mid_channels, freq_channels, block_size, kernel_size_freq, kernel_size_time, kernel_size_1d, dilation=2, layers_crn=4, layers_1d=6):
         super().__init__()
-        self.kernel_size=kernel_size
-        self.stride=stride
-        self.fullconv=fullconv
-        self.activation=nn.Tanh()
-        if not fullconv:
-            self.l1=ComplexConv1d(channel_in, channel_out, 1)
-            self.l2=ComplexConvTranspose1d(channel_out, channel_out, kernel_size, stride=stride, groups=channel_out)
-        else:
-            self.l=ComplexConvTranspose1d(channel_in, channel_out, kernel_size, stride=stride)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                 
+        self.crn=SpectrogramCRN(in_channels, mid_channels, freq_channels, channels, block_size, kernel_size_freq, kernel_size_time, layers_crn)
+        self.first=CausalComplexConv1d(in_channels, channels, reception, fullconv=True)
+        self.last=CausalComplexConvTrans1d(channels, 1, reception, fullconv=True)
+        
+        self.mixer=ComplexConv1d(channels*2, channels, 1)
+        
+        self.encoders=nn.ModuleList()
+        
+        d=1
+        for i in range(layers_1d):
+            self.encoders.append(CausalTCN(channels, channels, hidden_channels, d))
+            d*=dilation
+        
+        self.block_size=block_size
+        self.activation=nn.LeakyReLU(0.1)
+        
+        self.loss_fn=asteroid.losses.pairwise_neg_sisdr 
+
+    def forward(self, mix:torch.Tensor):
+        # mix: [batch, channel, length]
+        # make sure tensor are the same size
+        residual=mix.shape[2]%self.block_size
+        if residual!=0:
+            mix=mix[:,:,:-residual]
+        
+        #cudaMem()
+        
+        #spectrogram
+        spec_out=self.crn(mix)[:,:,:-1,:] # B,2,T,C
+        spec_out=torch.repeat_interleave(spec_out, repeats=self.block_size//2, dim=2)
+        spec_out=spec_out.permute(0,1,3,2) # B,2,C,L
+        
+        #cudaMem()
+        
+        mix=toComplex(mix)
+        x=self.first(mix)
+        final=x
+        x=self.activation(x) # B,2,C,L
+        
+        
+        # mix
+        x=torch.cat((x, spec_out), 2) # B,2,C*2, L
+        x=self.mixer(x)
+        x=self.activation(x)
+        
+        
+        # encoders
+        for encode in self.encoders:
+            #cudaMem()
+            x=encode(x)
             
-    def forward(self, x):
-        if not self.fullconv:
-            return self.l2(self.activation(self.l1(x)))[..., self.kernel_size-self.stride:]
-        else:
-            return self.l(x)[..., self.kernel_size-self.stride:]
+        # mask
+        final=cMul(F.tanh(x), final)
+        
+        # last layer
+        final=self.last(final)
+        
+        return toReal(final)
+    
+    def loss(self, signal, gt, mix):
+        return torch.sum(self.loss_fn(signal[..., 24000:], gt[..., 24000:]))   
     
 class NSNet(nn.Module):
-    def __init__(self, in_channels, block_size, ff_size, batch_size):
+    def __init__(self, in_channels, block_size, ff_size):
         super().__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
@@ -94,7 +197,7 @@ class NSNet(nn.Module):
         self.ff_size=ff_size
         self.block_size=block_size
         
-        self.act=nn.Tanh()
+        self.act=nn.LeakyReLU(0.1)
         self.stft=ComplexSTFTWrapper(hop_length=block_size//2, win_length=block_size)
         self.shuffle=ComplexLinear(in_channels, in_channels)
         self.ff1=ComplexMultiLinear(in_channels, block_size//2, ff_size)
@@ -110,12 +213,12 @@ class NSNet(nn.Module):
         self.alayers=nn.ModuleList()
         self.alayers.append(ComplexLinear(1, in_channels*block_size//2))
         for i in range(3):
-            self.alayers.append(ComplexLinear(1, in_channels*ff_size))
+            self.alayers.append(ComplexLinear(2, in_channels*ff_size))
         
         self.loss_fn=asteroid.losses.pairwise_neg_sisdr 
         
     def forward(self, mix:torch.Tensor, angle:torch.Tensor):
-        angle=angle.view(-1,2,1)
+        #angle=angle.view(-1,2,1)
         B=mix.shape[0]
         
         l0=self.stft.transform(mix) # B, 2, C, F, T
@@ -159,7 +262,7 @@ class NSNet(nn.Module):
         l6=self.act(l6)
         
         l7=self.ff4(l6)
-        l7=self.act(l7) # B,2, C, T,F
+        #l7=self.act(l7) # B,2, C, T,F
         l7=l7.permute(0,1,2, 4,3) # B,2,C,F,T
         
         result=cMul(ori, l7)
@@ -170,10 +273,10 @@ class NSNet(nn.Module):
        
     def loss(self, signal, gt, mix):
         
-        return torch.sum(self.loss_fn(signal, gt))   
+        return torch.sum(self.loss_fn(signal[..., 24000:], gt[..., 24000:]))   
     
 class SimpleNetwork(nn.Module):        
-    def __init__(self, in_channels, channels, kernel_size, reception, lstm_layers=2, depth=2, context=3, stride=2, wnet_reception=4, wnet_layers=4):
+    def __init__(self, in_channels, channels, kernel_size, reception, lstm_layers=2, depth=2, stride=2, wnet_reception=4, wnet_layers=4):
         super().__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
                  
@@ -183,12 +286,8 @@ class SimpleNetwork(nn.Module):
         
         self.kernel_size=kernel_size
         self.reception=reception
-        self.context=context
         self.stride=stride
-        self.activation=nn.Tanh()
-        
-        #self.lstm=nn.GRU(input_size=channels, hidden_size=channels, num_layers=lstm_layers)
-        #self.lstm=nn.LSTM(input_size=channels, hidden_size=channels, num_layers=lstm_layers) 
+        self.activation=nn.LeakyReLU(0.1)
         
         # added wavenet-like convs
         self.wnet_reception=wnet_reception
@@ -205,23 +304,27 @@ class SimpleNetwork(nn.Module):
             self.wconvs.append(wconv)
             
             al=nn.ModuleList()
-            al.append(ComplexLinear(1, channels))
-            al.append(self.activation)
+            al.append(ComplexLinear(2, channels))
+            al.append(SineAct())
             self.alayers.append(al) # B, C
             
             dilation*=wnet_reception
         
-        self.first=CausalComplexConv1d(in_channels, channels, reception)
+        self.first=CausalComplexConv1d(in_channels, channels, reception, fullconv=True)
         self.last=CausalComplexConvTrans1d(channels*2, 1, reception, fullconv=True)
         for i in range(depth):
             encode=nn.ModuleDict()
-            encode["conv"]=CausalComplexConv1d(channels, channels, kernel_size, stride=stride, fullconv=True)
+            encode["conv"]=CausalComplexConv1d(channels, channels, kernel_size, stride=stride)
             encode["relu"]=self.activation
             
             self.encoders.append(encode)
             
             decode=nn.ModuleDict()
-            decode["conv"]=CausalComplexConvTrans1d(channels*2, channels, kernel_size, stride=stride) 
+            if i>0:
+                decode["conv"]=CausalComplexConvTrans1d(channels*2, channels, kernel_size, stride=stride) 
+            else:
+                decode["conv"]=CausalComplexConvTrans1d(channels, channels, kernel_size, stride=stride) 
+            
             decode["relu"]=self.activation
             self.decoders.append(decode)
             
@@ -240,26 +343,24 @@ class SimpleNetwork(nn.Module):
         # attention
         x2=x # B, channels, L
         for i in range(self.wnet_layers):
-            xa=angle.view(-1,2,1)
+            xa=angle
             for layer in self.alayers[i]:
                 xa=layer(xa)
             for layer in self.wconvs[i]:
                 x2=layer(x2)
-            #print(x2.shape, xa.shape)
             x2=cMul(x2, xa.unsqueeze(-1))
         x=cMul(x,x2)
         
-        saved=[x]
+        saved=[]
         
         # encoders
         id=0
         for encode in self.encoders:
+            saved.append(x)
+            
             x=encode["conv"](x)
             x=encode["relu"](x)
-            saved.append(x)
             id+=1
-        
-        
         
         '''
         x=toReal(x)
@@ -270,16 +371,12 @@ class SimpleNetwork(nn.Module):
         '''
         # decoders
         for decode in self.decoders:
-            # skip=center_trim(saved.pop(-1), x)
-            skip=saved.pop(-1)
-            #x=x+skip
-            x=torch.cat((x, skip), -2)
             x=decode["conv"](x)
             x=decode["relu"](x)
-        
+            skip=saved.pop(-1)
+            x=torch.cat((x, skip), -2)
+            
         # last layer
-        skip=saved.pop(-1)
-        x=torch.cat((x, skip), -2)
         x=self.last(x)
         
         return toReal(x)
@@ -295,7 +392,7 @@ class SimpleNetwork(nn.Module):
         return (l1*0.1+l2*0.5+l3)/total_len
         '''
         #return si_sdr_loss(signal, gt)
-        #return F.l1_loss(signal[..., 24000:], gt[..., 24000:])
+        return F.l1_loss(signal[..., 24000:], gt[..., 24000:])
         #return util.wsdr_loss(mix, signal, gt)
-        return torch.sum(self.loss_fn(signal, gt))
+        #return torch.sum(self.loss_fn(signal, gt))
     

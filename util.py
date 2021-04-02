@@ -3,10 +3,14 @@ import numpy as np
 from scipy import signal
 import torch
 import torch.nn.functional as F
+import subprocess
 
 EPS=1e-8
 
-
+def cudaMem():
+    result = subprocess.check_output(['nvidia-smi'], encoding='utf-8')
+    print(result)
+    
 def pow_p_norm(signal):
     """Compute 2 Norm"""
     return torch.pow(torch.norm(signal, p=2, dim=-1, keepdim=True), 2)
@@ -133,3 +137,25 @@ def mix(signal, noise, target_snr_db):
     newnoise=noise*np.sqrt(dbto(db(psig/pnoi)-target_snr_db))
     res=signal+newnoise
     return res, newnoise
+
+def delay(signal, sample):
+    t=-sample/len(signal)
+    sigf=np.fft.fft(signal)
+    sigf[len(signal)//2]*=np.exp(1j*2*np.pi*len(signal)/2*t)
+    for i in range(1, len(signal)//2):
+        sigf[i]*=np.exp(1j*2*np.pi*i*t)
+        sigf[len(signal)-i]*=np.exp(-1j*2*np.pi*i*t)
+    return np.fft.ifft(sigf)
+
+def alignChannel(signal, angle, mic_array_layout, V=343.0, fs=48000):
+    # signal is [N, C]
+    n_mic=signal.shape[1]
+    result=np.zeros(signal.shape)
+    
+    for m in range(n_mic):
+        dx=mic_array_layout[0, m]
+        dy=mic_array_layout[1, m]
+        d=dx*np.cos(angle)+dy*np.sin(angle)
+        d=d/V*fs
+        result[:,m]=delay(signal[:,m], d)
+    return result
