@@ -88,8 +88,8 @@ class DualModel(nn.Module):
         self.act=nn.LeakyReLU(0.01)
         
         self.spec_model=SpectrogramNN(in_channels, spec_channels, block_size, first_kernel_size[0], first_kernel_size[1])
-        #self.lstm_layers=ComplexConvLSTM(spec_channels, lstm_channels, [1]+(lstm_layer-1)*[lstm_kernel_size], lstm_layer, True)
-        self.lstm_layers=CausalComplexConv2d(spec_channels, lstm_channels[-2], lstm_channels[-1], first_kernel_size[0], first_kernel_size[1])
+        self.lstm_layers=ComplexConvLSTM(spec_channels, lstm_channels, [1]+(lstm_layer-1)*[lstm_kernel_size], lstm_layer, True)
+        #self.lstm_layers=CausalComplexConv2d(spec_channels, lstm_channels[-2], lstm_channels[-1], first_kernel_size[0], first_kernel_size[1])
         
         self.wav_first=nn.Sequential(
             CausalComplexConv1d(in_channels, wav_channels, reception, fullconv=True),
@@ -121,43 +121,45 @@ class DualModel(nn.Module):
         spec=self.spec_model(mix) #B,2,C,F,T
         spec=spec[:,:,:,0::2,:]+spec[:,:,:,1::2,:] # reduce F
         spec_out=spec
-        #spec_out=cLog(spec)
+        spec_out=cLog(spec)
         
-        #print(torch.cuda.memory_allocated())
+        print(torch.cuda.memory_allocated())
         
         # conv LSTM
-        #spec_out=spec_out.permute(0,1,4,2,3) # B,2,F/2,T,C
-        #spec_out=self.lstm_layers(spec_out)[0] # B,2,T,C,F
-        spec_out=self.lstm_layers(spec_out).permute(0,1,4,2,3)
-        spec_out=self.act(spec_out)
+        spec_out=spec_out.permute(0,1,4,2,3) # B,2,F/2,T,C
+        spec_out=self.lstm_layers(spec_out)[0] # B,2,T,C,F
+        #spec_out=self.lstm_layers(spec_out).permute(0,1,4,2,3)
+        #spec_out=self.act(spec_out)
         
-        #print(torch.cuda.memory_allocated())
+        print(torch.cuda.memory_allocated())
         
         # wav first half
         mix=toComplex(mix)
         wav=self.wav_first(mix) # B,2,C,L
         wav_out=wav
-        #wav_out=cLog(wav)
+        wav_out=cLog(wav)
         
-        #print(torch.cuda.memory_allocated())
+        print(torch.cuda.memory_allocated())
         
         # fuse
         fused=self.fuser(spec_out, wav_out) # B,2,C,L
         
-        #print(torch.cuda.memory_allocated())
+        print(torch.cuda.memory_allocated())
         
         # wav second half
         for l in self.wav_layers:
             fused=l(fused)
         
-        #print(torch.cuda.memory_allocated())
+        print(torch.cuda.memory_allocated())
         
         # apply to original
         fused=cExp(fused)
+        
+        
         final=cMul(fused, wav)
         final=self.last(final)
         
-        #print(torch.cuda.memory_allocated())
+        print(torch.cuda.memory_allocated())
         
         return toReal(final)
     

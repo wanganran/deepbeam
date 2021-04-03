@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 import numpy as np
 
+EPS=1e-3
+
 def cExp(tensor):
     # tensor: B, 2, ...
     e=torch.exp(tensor[:,0])
@@ -11,8 +13,11 @@ def cExp(tensor):
     return torch.stack([real, imag], dim=1)
 
 def cLog(tensor):
-    real=torch.log(torch.sqrt(tensor[:,0]**2+tensor[:,1]**2))
-    imag=torch.arctan(tensor[:,1]/tensor[:,0])
+    real=torch.log(torch.sqrt(tensor[:,0]**2+tensor[:,1]**2)+EPS)
+    eps=torch.ones(1, device=tensor.device)*EPS
+    nom=torch.where(torch.abs(tensor[:,1])>EPS, tensor[:,1], eps)
+    dem=torch.where(torch.abs(tensor[:,0])>EPS, tensor[:,0], eps)
+    imag=torch.arctan(nom/dem)
     return torch.stack([real, imag], dim=1)
 
 def cMul(t1,t2):
