@@ -5,20 +5,74 @@ import numpy as np
 
 EPS=1e-3
 
+def modExp(tensor, exp_max):
+    return torch.where(tensor>exp_max, (tensor-exp_max)*np.exp(exp_max)+np.exp(exp_max), torch.exp(tensor))
+
 def cExp(tensor):
     # tensor: B, 2, ...
-    e=torch.exp(tensor[:,0])
+    e=modExp(tensor[:,0], 5)
+    #print(torch.max(e), torch.min(e))
     real=e*torch.cos(tensor[:,1])
     imag=e*torch.sin(tensor[:,1])
+    
+    
+    #print(real.isnan().any(), imag.isnan().any())
     return torch.stack([real, imag], dim=1)
 
 def cLog(tensor):
-    real=torch.log(torch.sqrt(tensor[:,0]**2+tensor[:,1]**2)+EPS)
-    eps=torch.ones(1, device=tensor.device)*EPS
-    nom=torch.where(torch.abs(tensor[:,1])>EPS, tensor[:,1], eps)
-    dem=torch.where(torch.abs(tensor[:,0])>EPS, tensor[:,0], eps)
-    imag=torch.arctan(nom/dem)
+    eps_max=torch.ones(1, device=tensor.device)*EPS
+    eps_min=torch.ones(1, device=tensor.device)*(-EPS)
+
+    t=tensor[:,1]    
+    
+    t=torch.where((t>=0) & (t<EPS), eps_max, t)
+    t=torch.where((t<0) & (t>-EPS), eps_min, t)
+    
+    t2=tensor[:,0]    
+    
+    t2=torch.where((t2>=0) & (t2<EPS), eps_max, t2)
+    t2=torch.where((t2<0) & (t2>-EPS), eps_min, t2)
+    
+    real=0.5*torch.log((t**2+t2**2).clamp(min=EPS**2))
+    imag=torch.arctan(t/t2)
+    
+    #print(real.isnan().any(), imag.isnan().any())
     return torch.stack([real, imag], dim=1)
+
+class ModReLU(torch.nn.Module):
+    """ A modular ReLU activation function for complex-valued tensors """
+
+    def __init__(self, input_shape):
+        """ ModReLU
+        Args:
+            hidden_size (int): the number of features of the input/output tensors.
+        """
+        super(ModReLU, self).__init__()
+        self.bias = torch.nn.Parameter(torch.rand(input_shape))
+        self.relu = torch.nn.ReLU()
+
+    def forward(self, x, eps=1e-5):
+        """ ModReLU forward
+        Args:
+            x (torch.tensor): A 3-dimensional torch float tensor with the
+                real and imaginary part stored in the last dimension of the
+                tensor; i.e. with shape (batch_size, hidden_size, 2)
+            eps (optional, float): A small number added to the norm of the
+                complex tensor for numerical stability (default=1e-5).
+        Returns:
+            torch.tensor: A 3-dimensional torch float tensor with the real and
+                imaginary part stored in the last dimension of the tensor; i.e.
+                with shape (batch_size, hidden_size, 2)
+        """
+        x_re, x_im = x[:, 0], x[:, 1]
+        norm = torch.sqrt(x_re ** 2 + x_im ** 2) + eps
+        phase_re, phase_im = x_re / norm, x_im / norm
+        activated_norm = self.relu(norm + self.bias)
+        modrelu = torch.stack(
+            [activated_norm * phase_re, activated_norm * phase_im], 1
+        )
+        return modrelu
+
 
 def cMul(t1,t2):
     real=t1[:,0]*t2[:,0]-t1[:,1]*t2[:,1]

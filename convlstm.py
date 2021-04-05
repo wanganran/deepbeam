@@ -5,7 +5,7 @@ import torch.jit as jit
 from typing import List, Tuple
 
 # changed to use complex conv1d
-class ComplexConvLSTMCell(jit.ScriptModule):
+class ConvLSTMCell(jit.ScriptModule):
 
     def __init__(self, input_dim, hidden_dim, kernel_size, bias=True):
         """
@@ -23,7 +23,7 @@ class ComplexConvLSTMCell(jit.ScriptModule):
             Whether or not to add the bias.
         """
 
-        super(ComplexConvLSTMCell, self).__init__()
+        super(ConvLSTMCell, self).__init__()
 
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
@@ -32,30 +32,31 @@ class ComplexConvLSTMCell(jit.ScriptModule):
         self.padding = kernel_size // 2
         self.bias = bias
 
-        self.conv = ComplexConv1d(in_channel=self.input_dim + self.hidden_dim,
-                              out_channel=4 * self.hidden_dim,
+        self.conv = nn.Conv1d(in_channels=self.input_dim + self.hidden_dim,
+                              out_channels=4 * self.hidden_dim,
                               kernel_size=self.kernel_size,
                               padding=self.padding,
                               bias=self.bias)
+        
     @jit.script_method
     def forward(self, input_tensor:torch.Tensor, cur_state:Tuple[torch.Tensor, torch.Tensor])->Tuple[torch.Tensor, torch.Tensor]:
         h_cur, c_cur = cur_state
 
-        combined = torch.cat([input_tensor, h_cur], dim=2)  # concatenate along channel axis
+        combined = torch.cat([input_tensor, h_cur], dim=1)  # concatenate along channel axis
 
         combined_conv = self.conv(combined)
-        cc_i, cc_f, cc_o, cc_g = torch.split(combined_conv, self.hidden_dim, dim=2)
+        cc_i, cc_f, cc_o, cc_g = torch.split(combined_conv, self.hidden_dim, dim=1)
         i = torch.sigmoid(cc_i)
         f = torch.sigmoid(cc_f)
         o = torch.sigmoid(cc_o)
         g = torch.tanh(cc_g)
 
-        c_next = cMul(f, c_cur) + cMul(i, g)
-        h_next = cMul(o, torch.tanh(c_next))
+        c_next = f*c_cur + i*g
+        h_next = o*torch.tanh(c_next)
 
         return h_next, c_next
 
-class ComplexConvLSTM(jit.ScriptModule):
+class ConvLSTM(jit.ScriptModule):
 
     """
 
@@ -85,7 +86,7 @@ class ComplexConvLSTM(jit.ScriptModule):
 
     def __init__(self, input_dim, hidden_dim, kernel_size, num_layers,
                  batch_first=False, bias=True, return_all_layers=False):
-        super(ComplexConvLSTM, self).__init__()
+        super(ConvLSTM, self).__init__()
 
         #self._check_kernel_size_consistency(kernel_size)
 
@@ -107,7 +108,7 @@ class ComplexConvLSTM(jit.ScriptModule):
         for i in range(0, self.num_layers):
             cur_input_dim = self.input_dim if i == 0 else self.hidden_dim[i - 1]
 
-            cell_list.append(ComplexConvLSTMCell(input_dim=cur_input_dim,
+            cell_list.append(ConvLSTMCell(input_dim=cur_input_dim,
                                           hidden_dim=self.hidden_dim[i],
                                           kernel_size=self.kernel_size[i],
                                           bias=self.bias))
@@ -130,35 +131,35 @@ class ComplexConvLSTM(jit.ScriptModule):
         last_state_list, layer_output
         """
         if not self.batch_first:
-            # (t, 2, b, c, l) -> (b, 2, t, c, l)
-            input_tensor = input_tensor.permute(2, 1, 0, 3, 4)
+            # (t, b, c, l) -> (b, t, c, l)
+            input_tensor = input_tensor.permute(1, 0, 2, 3)
 
-        b, _, _, _, l = input_tensor.size()
+        b, _, _, l = input_tensor.size()
 
         # Since the init is done in forward. Can send image size here
 
         hidden_state=jit.annotate(List[Tuple[torch.Tensor, torch.Tensor]], [])
         for i in range(self.num_layers):
-            hid=(torch.zeros(b, 2, self.hidden_dim[i], l, device=input_tensor.device),
-                torch.zeros(b, 2, self.hidden_dim[i], l, device=input_tensor.device))
+            hid=(torch.zeros(b, self.hidden_dim[i], l, device=input_tensor.device),
+                torch.zeros(b, self.hidden_dim[i], l, device=input_tensor.device))
             hidden_state.append(hid)
 
 
         layer_output_list = jit.annotate(List[torch.Tensor], [])
         last_state_list = jit.annotate(List[Tuple[torch.Tensor, torch.Tensor]], [])
 
-        seq_len = input_tensor.size(2)
+        seq_len = input_tensor.size(1)
         cur_layer_input = input_tensor
 
         for layer_idx, cell in enumerate(self.cell_list):
 
             h, c = hidden_state[layer_idx]
             output_inner = []
-            for t in torch.unbind(cur_layer_input, dim=2):
+            for t in torch.unbind(cur_layer_input, dim=1):
                 h, c = cell(input_tensor=t, cur_state=(h, c))
                 output_inner.append(h)
 
-            layer_output = torch.stack(output_inner, dim=2)
+            layer_output = torch.stack(output_inner, dim=1)
             cur_layer_input = layer_output
 
             layer_output_list.append(layer_output)
