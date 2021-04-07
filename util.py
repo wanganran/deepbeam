@@ -103,16 +103,13 @@ def real_bpf(sr, fmin, fmax, fw):
     wind=wind-s
     return wind
 
-def calculate_gain(original, mixed, beamformed, fs=48000, freq_low=100, freq_high=10000, wind_size=129):
+def calculate_gain(original, mixed, beamformed, fs=24000, freq_low=100, freq_high=10000, wind_size=129):
     # first high pass filter
-    wind=real_bpf(48000, freq_low, freq_high, wind_size)
-    original=np.real(np.convolve(original, wind, 'valid'))
-    mixed=np.real(np.convolve(mixed, wind, 'valid'))
-    beamformed=np.real(np.convolve(beamformed, wind, 'valid'))
-
-    #ipd.display(ipd.Audio(original, rate=48000))
-    #ipd.display(ipd.Audio(mixed, rate=48000))
-    #ipd.display(ipd.Audio(beamformed, rate=48000))
+    if wind_size is not None:
+        wind=real_bpf(fs, freq_low, freq_high, wind_size)
+        original=np.real(np.convolve(original, wind, 'valid'))
+        mixed=np.real(np.convolve(mixed, wind, 'valid'))
+        beamformed=np.real(np.convolve(beamformed, wind, 'valid'))
     
     l=np.min([len(original), len(mixed), len(beamformed)])
     si_sdr1=si_sdr(mixed[:l], original[:l])

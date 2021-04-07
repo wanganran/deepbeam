@@ -101,7 +101,7 @@ class ComplexLinear(nn.Module):
         return output
 
 class ComplexMultiLinear(nn.Module):
-    def __init__(self, channel, inputsize, outputsize, bias=True):
+    def __init__(self, channel, inputsize, outputsize, bias=True, complex_mul=True):
         super(ComplexMultiLinear,self).__init__()
         
         ## Model components
@@ -111,14 +111,19 @@ class ComplexMultiLinear(nn.Module):
             self.re.append(nn.Linear(inputsize, outputsize))
             self.im.append(nn.Linear(inputsize, outputsize))
         self.channel=channel
+        self.complex_mul=complex_mul
         
     def forward(self, x): 
         # x: B, 2, C, ..., inputsize
         # out: B, 2, C, ..., outputsize
         output=[]
         for i in range(self.channel):
-            real=self.re[i](x[:,0, i])-self.im[i](x[:,1, i])
-            imag=self.re[i](x[:,1, i])+self.im[i](x[:,0, i])
+            if self.complex_mul:
+                real=self.re[i](x[:,0, i])-self.im[i](x[:,1, i])
+                imag=self.re[i](x[:,1, i])+self.im[i](x[:,0, i])
+            else:
+                real=self.re[i](x[:,0,i])
+                imag=self.im[i](x[:,1,i])
             output.append(torch.stack((real,imag),dim=1))
         
         return torch.stack(output, dim=2)
