@@ -40,30 +40,12 @@ def cLog(tensor):
     return torch.stack([real, imag], dim=1)
 
 class ModReLU(torch.nn.Module):
-    """ A modular ReLU activation function for complex-valued tensors """
-
     def __init__(self, input_shape):
-        """ ModReLU
-        Args:
-            hidden_size (int): the number of features of the input/output tensors.
-        """
         super(ModReLU, self).__init__()
         self.bias = torch.nn.Parameter(torch.rand(input_shape))
         self.relu = torch.nn.ReLU()
 
     def forward(self, x, eps=1e-5):
-        """ ModReLU forward
-        Args:
-            x (torch.tensor): A 3-dimensional torch float tensor with the
-                real and imaginary part stored in the last dimension of the
-                tensor; i.e. with shape (batch_size, hidden_size, 2)
-            eps (optional, float): A small number added to the norm of the
-                complex tensor for numerical stability (default=1e-5).
-        Returns:
-            torch.tensor: A 3-dimensional torch float tensor with the real and
-                imaginary part stored in the last dimension of the tensor; i.e.
-                with shape (batch_size, hidden_size, 2)
-        """
         x_re, x_im = x[:, 0], x[:, 1]
         norm = torch.sqrt(x_re ** 2 + x_im ** 2) + eps
         phase_re, phase_im = x_re / norm, x_im / norm
@@ -73,6 +55,18 @@ class ModReLU(torch.nn.Module):
         )
         return modrelu
 
+class ModTanh(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        
+    def forward(self, x, eps=1e-5):
+        x_re, x_im = x[:, 0], x[:, 1]
+        norm = torch.sqrt(x_re ** 2 + x_im ** 2) + eps
+        phase_re, phase_im = x_re / norm, x_im / norm
+        activated_norm = torch.tanh(norm)
+        return torch.stack(
+            [activated_norm * phase_re, activated_norm * phase_im], 1
+        )
 
 def cMul(t1,t2):
     real=t1[:,0]*t2[:,0]-t1[:,1]*t2[:,1]
