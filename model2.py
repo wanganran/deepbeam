@@ -6,7 +6,7 @@ import complexcnn.modules
 importlib.reload(complexcnn.modules)
 from complexcnn.modules import ComplexConv1d, ComplexConvTranspose1d, ComplexLinear, ComplexMultiLinear, ComplexSTFTWrapper, ComplexConv2d, cMul, cLog, cExp, toComplex, toReal, CausalComplexConv1d, CausalComplexConvTrans1d,CausalComplexConv2d,ModReLU
 
-from sru import SRU
+from fastai.text.models.qrnn import QRNN
 
 import torch.jit as jit
 
@@ -225,7 +225,7 @@ class DualSRUModel(nn.Module):
         
         F=self.spec_model.getF()
         #self.lstm_shuffle=ComplexMultiLinear(spec_channels, F, lstm_num)
-        self.lstm_layer_real=nn.LSTM(
+        '''self.lstm_layer_real=QRNN(
             input_size=F*spec_channels, hidden_size=lstm_num*lstm_channels[0],
             num_layers = lstm_layer,          # number of stacking RNN layers
             #dropout = 0.0,           # dropout applied between RNN layers
@@ -234,7 +234,7 @@ class DualSRUModel(nn.Module):
             #highway_bias = 0,        # initial bias of highway gate (<= 0)
             #rescale = True          # whether to use scaling correction
         )
-        self.lstm_layer_imag=nn.LSTM( 
+        self.lstm_layer_imag=QRNN( 
             input_size=F*spec_channels, hidden_size=lstm_num*lstm_channels[0],
             num_layers = lstm_layer,          # number of stacking RNN layers
             #dropout = 0.0,           # dropout applied between RNN layers
@@ -242,8 +242,25 @@ class DualSRUModel(nn.Module):
             #layer_norm = False,      # apply layer normalization on the output of each layer
             #highway_bias = 0,        # initial bias of highway gate (<= 0)
             #rescale = True          # whether to use scaling correction
+        )'''
+        self.lstm_layer_real=QRNN(
+            input_size=F*spec_channels, hidden_size=lstm_num*lstm_channels[0],
+            n_layers = lstm_layer,batch_first=False          # number of stacking RNN layers
+            #dropout = 0.0,           # dropout applied between RNN layers
+            #bidirectional = False,   # bidirectional RNN
+            #layer_norm = False,      # apply layer normalization on the output of each layer
+            #highway_bias = 0,        # initial bias of highway gate (<= 0)
+            #rescale = True          # whether to use scaling correction
         )
-
+        self.lstm_layer_imag=QRNN( 
+            input_size=F*spec_channels, hidden_size=lstm_num*lstm_channels[0],
+            n_layers = lstm_layer,batch_first=False          # number of stacking RNN layers
+            #dropout = 0.0,           # dropout applied between RNN layers
+            #bidirectional = False,   # bidirectional RNN
+            #layer_norm = False,      # apply layer normalization on the output of each layer
+            #highway_bias = 0,        # initial bias of highway gate (<= 0)
+            #rescale = True          # whether to use scaling correction
+        )
         self.wav_first=nn.Sequential(
             CausalComplexConv1d(in_channels, wav_channels, reception, fullconv=True), #B,2,C,L
             ModReLU([wav_channels, 1]),
@@ -252,7 +269,11 @@ class DualSRUModel(nn.Module):
             ComplexConv1d(hidden_channels, wav_channels, 1)
             )
         
-        self.wav_short=CausalTCN(wav_channels, wav_channels, hidden_channels, 1, wav_kernel_size, ModReLU([hidden_channels, 1]))
+        self.wav_short=nn.Sequential(
+            CausalTCN(wav_channels, wav_channels, hidden_channels, 1, wav_kernel_size, ModReLU([hidden_channels, 1])),
+            ModReLU([wav_channels, 1]),
+            CausalTCN(wav_channels, wav_channels, hidden_channels, 1, wav_kernel_size, ModReLU([hidden_channels, 1]))
+        )
         
         self.fuser=Fuser(lstm_channels[-1], lstm_num, wav_channels, self.spec_model.getStep(), wav_channels)
         
