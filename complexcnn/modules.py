@@ -181,7 +181,7 @@ class ComplexConvTranspose1d(nn.Module):
         return output
 
 class ComplexConv2d(nn.Module):
-    def __init__(self, in_channel, out_channel, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True):
+    def __init__(self, in_channel, out_channel, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True, complex_mul=True):
         super(ComplexConv2d,self).__init__()
         self.padding = padding
 
@@ -189,10 +189,17 @@ class ComplexConv2d(nn.Module):
         self.conv_re = nn.Conv2d(in_channel, out_channel, kernel_size, stride=stride, padding=padding, dilation=dilation, groups=groups, bias=bias)
         self.conv_im = nn.Conv2d(in_channel, out_channel, kernel_size, stride=stride, padding=padding, dilation=dilation, groups=groups, bias=bias)
         
+        self.complex_mul=complex_mul
+        
     def forward(self, x): # shpae of x : [batch,2,channel,axis1,axis2]
-        real = self.conv_re(x[:,0]) - self.conv_im(x[:,1])
-        imaginary = self.conv_re(x[:,1]) + self.conv_im(x[:,0])
-        output = torch.stack((real,imaginary),dim=1)
+        if self.complex_mul:
+            real = self.conv_re(x[:,0]) - self.conv_im(x[:,1])
+            imag = self.conv_re(x[:,1]) + self.conv_im(x[:,0])
+            output = torch.stack((real,imag),dim=1)
+        else:
+            real = self.conv_re(x[:,0])
+            imag = self.conv_im(x[:,1])
+            output = torch.stack((real,imag),dim=1)
         return output
 
 class CausalComplexConv1d(nn.Module):
