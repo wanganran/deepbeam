@@ -54,13 +54,14 @@ class MiniBeamformer(nn.Module):
         T=tensor.shape[-1]
         t=cLog(tensor)
         t=self.channel_shuffle(t)
+        t=self.cAct(t)
+        
         t=self.freq_conv(t) # B,2,C,F,T
         t=self.cAct(t)
         
         t=self.time_conv(t)
-        t=self.cAct(t)
-        
         t=cExp(t)
+        
         t=self.last_shuffle(t)
         
         if self.beamform_last:
@@ -87,30 +88,30 @@ class MiniBeamformerModel(nn.Module):
         
         if return_last:
             self.bs.append(MiniBeamformer(self.freqs, freq_kernel_size, spec_channels, hidden_channels, time_kernel_size, dilation, False))
-            self.last=ParallelConv1d(self.freqs, spec_channels, out_channels, 1)
+            #self.last=ParallelConv1d(self.freqs, out_channels, spec_channels, 1)
         
         else:
             self.bs.append(MiniBeamformer(self.freqs, freq_kernel_size, spec_channels, hidden_channels, time_kernel_size, dilation, False, out_channels))
         
+        self.act=ModReLU((spec_channels, self.freqs, 1))
         self.loss_fn=asteroid.losses.pairwise_neg_sisdr 
         
     def forward(self,mix):
         t=self.stft.transform(mix) # B, 2, C, F, T
-        trest=t[:,:,:,self.block_size//2:,:]
+        trest=torch.sum(t[:,:,:,self.block_size//2:,:], dim=2, keepdim=True)
         t=t[:,:,:,:self.block_size//2,:]
-        tori=t
         t=self.first(t)
+        tori=t
         
         for l in self.bs:
             t=l(t)
         
         if self.return_last:
-            t=self.last(t)
-
+            #t=self.last(t)
+            t=self.act(t)
             t=cMul(t, tori)
-
-            t=torch.cat([t, trest], 3)
             t=torch.sum(t, dim=2, keepdim=True)
+            t=torch.cat([t, trest], 3)
             t=self.stft.reverse(t)
             return t
         else:
