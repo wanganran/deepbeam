@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-EPS=1e-3
+EPS=1e-4
 
 def modExp(tensor, exp_max):
     return torch.where(tensor>exp_max, (tensor-exp_max)*np.exp(exp_max)+np.exp(exp_max), torch.exp(tensor))
@@ -45,9 +45,9 @@ class ModReLU(torch.nn.Module):
         self.bias = torch.nn.Parameter(torch.rand(input_shape))
         self.relu = torch.nn.ReLU()
 
-    def forward(self, x, eps=1e-5):
+    def forward(self, x, eps=1e-4):
         x_re, x_im = x[:, 0], x[:, 1]
-        norm = torch.sqrt(x_re ** 2 + x_im ** 2) + eps
+        norm = torch.sqrt(x_re ** 2 + x_im ** 2 + eps)
         phase_re, phase_im = x_re / norm, x_im / norm
         activated_norm = self.relu(norm + self.bias)
         modrelu = torch.stack(
@@ -59,15 +59,48 @@ class ModTanh(torch.nn.Module):
     def __init__(self):
         super().__init__()
         
-    def forward(self, x, eps=1e-5):
+    def forward(self, x, eps=1e-4):
         x_re, x_im = x[:, 0], x[:, 1]
-        norm = torch.sqrt(x_re ** 2 + x_im ** 2) + eps
+        norm = torch.sqrt(x_re ** 2 + x_im ** 2 + eps)
         phase_re, phase_im = x_re / norm, x_im / norm
         activated_norm = torch.tanh(norm)
         return torch.stack(
             [activated_norm * phase_re, activated_norm * phase_im], 1
         )
 
+    
+def modLog(x):
+    x_re, x_im = x[:, 0], x[:, 1]
+    norm = torch.sqrt(x_re ** 2 + x_im ** 2 + 1)
+    phase_re, phase_im = x_re / norm, x_im / norm
+    activated_norm = torch.log(norm)
+    return torch.stack(
+        [activated_norm * phase_re, activated_norm * phase_im], 1
+    )
+
+class ModMaxPool2d(torch.nn.Module):
+    def __init__(self, kernel, dilation):
+        super().__init__()
+        self.padding=nn.ReplicationPad1d((kernel*dilation-dilation, 0))
+        self.maxpool=nn.MaxPool1d(kernel, 1, dilation=dilation, padding=0, return_indices=True)
+
+    def forward(self, x):
+        B,_,C,X,Y=x.shape
+        xp=x[:,0]**2+x[:,1]**2
+        xp=xp.view(B, C*X, Y) # -1, C*F, T
+        _, idx=self.maxpool(xp) # B, C*F, T-padding
+        r=x[:,0].view(B,C*X,Y)
+        #print(xp.shape,idx,shape)
+        r=torch.gather(r, 2, idx)
+        r=self.padding(r) #B, C*F, T
+        r=r.view(B,C,X,Y)
+        i=x[:,1].view(B,C*X,Y)
+        i=torch.gather(i, 2, idx)
+        i=self.padding(i)
+        i=i.view(B,C,X,Y)
+        
+        return torch.stack([r,i], dim=1)
+    
 def cMul(t1,t2):
     real=t1[:,0]*t2[:,0]-t1[:,1]*t2[:,1]
     imag=t1[:,1]*t2[:,0]+t1[:,0]*t2[:,1]
@@ -123,28 +156,25 @@ class ComplexMultiLinear(nn.Module):
         return torch.stack(output, dim=2)
     
 class ComplexSTFTWrapper(nn.Module):
-    def __init__(self, win_length, hop_length):
+    def __init__(self, win_length, hop_length, center=True):
         super(ComplexSTFTWrapper,self).__init__()
         self.win_length=win_length
         self.hop_length=hop_length
+        self.center=center
         
     def transform(self, input_data):
-        channel=input_data.shape[-2]
-        result=[]
-        for i in range(channel):
-            r=torch.stft(input_data[:, i, :], n_fft=self.win_length, hop_length=self.hop_length, return_complex=False)
-            result.append(r.permute(0, 3, 1, 2))
-        return torch.stack(result, dim=2) # B, 2, C, F, L
+        B,C,L=input_data.shape
+        input_data=input_data.view(B*C, L)
+        r=torch.stft(input_data, n_fft=self.win_length, hop_length=self.hop_length, center=self.center, return_complex=False)
+        _,F,T,_=r.shape
+        return r.view(B,C,F,T,2).permute(0,4,1,2,3)    
                               
     def reverse(self, input_data):
-        channel=input_data.shape[-3]
-        result=[]
-        for i in range(channel):
-            d=input_data[:, :, i, :, :].permute(0,2,3,1)
-            r=torch.istft(d, n_fft=self.win_length, hop_length=self.hop_length, return_complex=False) # B, L
-            result.append(r)
-        return torch.stack(result, dim=1) # B, C, L
-   
+        B,_,C,F,T=input_data.shape
+        input_data=input_data.permute(0,2,3,4,1).view(B*C,F,T,2)
+        r=torch.istft(input_data, n_fft=self.win_length, hop_length=self.hop_length, center=self.center, return_complex=False) # B, L
+        return r.view(B,C,-1)
+        
     def forward(self, x):
         return self.reverse(self.transform(x))
             
