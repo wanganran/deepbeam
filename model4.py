@@ -26,6 +26,21 @@ class TrainableSTFTWrapper(nn.Module): # assume same win_length and hop_length
     def forward(self, x):
         return self.transform(x)
         
+class TGate(nn.Module):
+    def __init__(self, input_shape):
+        super().__init__()
+        self.transform = torch.nn.Parameter(torch.randn((2,2)+input_shape))
+        self.bias = torch.nn.Parameter(torch.randn((2,)+input_shape))
+        self.act = torch.nn.Sigmoid()
+    
+    def forward(self, tensor):
+        real=tensor[:,0]
+        imag=tensor[:,1]
+        
+        newreal=real*self.transform[0,0]+imag*self.transform[0,1]+self.bias[0]
+        newimag=real*self.transform[1,0]+imag*self.transform[1,1]+self.bias[1]
+        
+        return self.act(newreal)*self.act(newimag)
 
 class TReLU(nn.Module):
     def __init__(self, input_shape):
@@ -73,8 +88,8 @@ def feature_norm(tensor, ch, bias=False, EPS=1e-4):
         avg=tensor.mean(ch, keepdim=True)
         tensor=tensor-avg
     
-    avg_len=torch.mean(tensor[:,0]**2+tensor[:,1]**2, dim=ch, keepdim=True)
-    tensor=tensor/(torch.sqrt(avg_len+EPS))
+    avg_len=torch.mean(tensor[:,0:1]**2+tensor[:,1:2]**2, dim=ch, keepdim=True)
+    tensor=tensor/(torch.sqrt(avg_len+EPS**2))
     
     return tensor
         
@@ -113,8 +128,8 @@ class MiniBeamformer(nn.Module):
         self.conv2=ComplexConv2d(ch*ch, ch, (freq_kernel, 1), padding=(freq_kernel//2, 0))
         self.act2=TReLU((F,1))
         self.conv3=ComplexConv1d(ch*F,ch*F, time_kernel, padding=self.padding, dilation=dilation, groups=ch*F)
-        #self.pool=ModMaxPool2d(time_kernel, 1)
-        self.act3=TReLU((F,1))
+        self.pool=ModMaxPool2d(time_kernel, 1)
+        self.act3=ModReLU((F,1))
         
         
     def forward(self, tensor):
@@ -123,29 +138,105 @@ class MiniBeamformer(nn.Module):
         tori=t
         #print(torch.cuda.memory_allocated())
         
-        #print("  ", torch.isnan(t).any(), t[0,0])
         t=self.act1(t)
         t=cov_complex(t) # B,2,ch*ch,F,T
-        #print("  ", torch.isnan(t).any(), t[0,0])
         t=modLog(t)
-        #t=feature_norm(t, 2)
+        t=feature_norm(t, 2)
         t=self.act2(t)
-        #print("  ", torch.isnan(t).any(), t[0,0])
         t=self.conv2(t) # B,2,ch,F,T
         
-        #print("  ", torch.isnan(t).any(), t[0,0])
         t=self.act3(t)
-        #print("  ", torch.isnan(t).any(), t[0,0])
         t=t.view(B,2,-1,T)
         t=self.conv3(t)[..., self.padding:]
         t=t.view(B,2,-1,F,T)
         
-        #print("  ", torch.isnan(t).any(), t[0,0])
-        #t=self.pool(t) # B,2,ch,F,T
+        t=self.pool(t) # B,2,ch,F,T
         
         return t, cMul(t, tori) 
         
+class MiniBeamformerV2(nn.Module):
+    def __init__(self, ch, ch_cov, F, freq_kernel, time_kernel, dilation=1):
+        super().__init__()
         
+        self.ch=ch
+        self.time_kernel=time_kernel
+        self.padding=time_kernel*dilation-dilation
+        
+        self.conv1=ComplexConv2d(ch_cov, ch_cov, (1, time_kernel), padding=(0, self.padding), dilation=dilation)
+        self.act1=TGate((ch_cov, 1, 1))
+        self.conv2=nn.Conv2d(ch_cov, ch*ch, (1, 1))
+        self.w=torch.nn.Parameter(torch.randn(1, 2, ch*ch*F))
+        self.conv3=ComplexConv2d(ch*2, ch, (freq_kernel, time_kernel), padding=(freq_kernel//2, self.padding), dilation=(1, dilation))
+        
+    def __norm(self, w, EPS=1e-4):
+        r=w[:, 0]
+        i=w[:, 1]
+        d=torch.sqrt(r*r+i*i+EPS*EPS)
+        return torch.stack([r/d, i/d], dim=1)
+    
+    def __complex_bmm(self, a, b):
+        newreal=torch.bmm(a[:,0], b[:,0])-torch.bmm(a[:,1], b[:,1])
+        newimag=torch.bmm(a[:,1], b[:,0])+torch.bmm(a[:,0], b[:,1])
+        return torch.stack([newreal, newimag], dim=1)
+    
+    def forward(self, tensor, cov):
+        B, _, C, F, T=tensor.shape
+        
+        cov=self.conv1(cov)[..., :-self.padding]
+        #rint(cov.shape)
+        tw=self.act1(cov) # B, ch*ch, F, T
+        tw=self.conv2(tw)
+        #rint(tw.shape)
+        
+        tw=tw.permute(0,3,1,2).reshape(-1, 1, C*C*F)
+        tw=tw*self.__norm(self.w)
+        tw=tw.view(B,T,2,C,C,F).permute(0,5,1,2,3,4) # B,F,T,2,C,C
+                
+        t2=tensor.permute(0,3,4,1,2) # B,F,T,2,C
+        
+        tf=self.__complex_bmm(t2.reshape(-1, 2, 1, C), tw.reshape(-1, 2, C, C)).reshape(B,F,T,2,C).permute(0,3,4,1,2)
+        tf=self.conv3(torch.cat([tf, tensor], dim=2))[..., :-self.padding]
+        
+        return tf
+        
+class MiniBeamformerModelV2(nn.Module):
+    def __init__(self, ch_in, ch, layers, block_size, time_kernel=4):
+        super().__init__()
+        self.F=block_size//2+1
+        
+        self.beamformers=nn.ModuleList()
+        dilation=1
+        
+        self.cov_first=ParallelConv1d(self.F, ch_in*ch_in, ch*ch, 1)
+        self.first=ParallelConv1d(self.F, ch_in, ch, 1)
+        for i in range(layers):
+            self.beamformers.append(MiniBeamformerV2(ch, ch*ch, self.F, 3, time_kernel, dilation))
+            dilation*=2
+        
+        self.last=nn.Sequential(ParallelConv1d(self.F, ch, 1, 1))
+        self.stft=ComplexSTFTWrapper(hop_length=block_size//2, win_length=block_size)
+        
+        self.loss_fn=asteroid.losses.pairwise_neg_sisdr 
+        
+    def forward(self, tensor):
+        t=self.stft.transform(tensor)
+        tc=cov_complex(t) #B,2,ch*ch, F, T
+        tc=self.cov_first(tc)
+        tc=feature_norm(tc, 2)
+        
+        t=self.first(t)
+        for l in self.beamformers:
+            #print(t.shape)
+            t=l(t, tc)
+        
+        t=self.last(t)
+        return self.stft.reverse(t)
+    
+     
+    def loss(self, signal, gt, mix):
+        return torch.sum(self.loss_fn(signal[..., 24000:], gt[..., 24000:]))             
+        
+                 
 class MiniBeamformerModel(nn.Module):
     def __init__(self, ch_in, ch, layers, block_size, time_kernel=4):
         super().__init__()
