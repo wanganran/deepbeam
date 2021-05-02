@@ -155,7 +155,7 @@ class MiniBeamformer(nn.Module):
         return t, cMul(t, tori) 
         
 class MiniBeamformerV2(nn.Module):
-    def __init__(self, ch, ch_cov, F, freq_kernel, time_kernel, dilation=1):
+    def __init__(self, ch, ch_cov, F, freq_kernel, time_kernel, dilation=1, ch_hid=20):
         super().__init__()
         
         self.ch=ch
@@ -166,7 +166,12 @@ class MiniBeamformerV2(nn.Module):
         self.act1=TGate((ch_cov, 1, 1))
         self.conv2=nn.Conv2d(ch_cov, ch*ch, (1, 1))
         self.w=torch.nn.Parameter(torch.randn(1, 2, ch*ch*F))
-        self.conv3=ComplexConv2d(ch*2, ch, (freq_kernel, time_kernel), padding=(freq_kernel//2, self.padding), dilation=(1, dilation))
+        self.conv3=nn.Sequential(
+            ComplexConv2d(ch*2, ch_hid, (freq_kernel, time_kernel), padding=(freq_kernel//2, self.padding), dilation=(1, dilation)),
+            ModReLU((ch_hid, F, 1)),
+            ComplexConv2d(ch_hid, ch, (1,1))
+        )
+        self.dropout=nn.Dropout(0.25)
         
     def __norm(self, w, EPS=1e-4):
         r=w[:, 0]
@@ -186,6 +191,7 @@ class MiniBeamformerV2(nn.Module):
         #rint(cov.shape)
         tw=self.act1(cov) # B, ch*ch, F, T
         tw=self.conv2(tw)
+        tw=self.dropout(tw)
         #rint(tw.shape)
         
         tw=tw.permute(0,3,1,2).reshape(-1, 1, C*C*F)
@@ -210,7 +216,7 @@ class MiniBeamformerModelV2(nn.Module):
         self.cov_first=ParallelConv1d(self.F, ch_in*ch_in, ch*ch, 1)
         self.first=ParallelConv1d(self.F, ch_in, ch, 1)
         for i in range(layers):
-            self.beamformers.append(MiniBeamformerV2(ch, ch*ch, self.F, 3, time_kernel, dilation))
+            self.beamformers.append(MiniBeamformerV2(ch, ch*ch, self.F, 5, time_kernel, dilation))
             dilation*=2
         
         self.last=nn.Sequential(ParallelConv1d(self.F, ch, 1, 1))
