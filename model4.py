@@ -191,7 +191,7 @@ class MiniBeamformerV2(nn.Module):
         #rint(cov.shape)
         tw=self.act1(cov) # B, ch*ch, F, T
         tw=self.conv2(tw)
-        tw=self.dropout(tw)
+        #tw=self.dropout(tw)
         #rint(tw.shape)
         
         tw=tw.permute(0,3,1,2).reshape(-1, 1, C*C*F)
@@ -282,7 +282,15 @@ class MiniBeamformerModel(nn.Module):
      
     def loss(self, signal, gt, mix):
         return torch.sum(self.loss_fn(signal[..., 24000:], gt[..., 24000:]))             
-                 
+
+class SISDRLoss(nn.Module):
+    def __init__(self, offset):
+        super().__init__()
+        self.offset=offset
+        
+    def forward(self, signal, gt):
+        return torch.sum(asteroid.losses.pairwise_neg_sisdr(signal[..., self.offset:], gt[..., self.offset:]))          
+    
 class NaiveModel(nn.Module):
     def __init__(self, ch_in, ch_hidden, block_size):
         super().__init__()
