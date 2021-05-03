@@ -155,7 +155,7 @@ class MiniBeamformer(nn.Module):
         return t, cMul(t, tori) 
         
 class MiniBeamformerV2(nn.Module):
-    def __init__(self, ch, ch_cov, F, freq_kernel, time_kernel, dilation=1, ch_hid=20):
+    def __init__(self, ch, ch_cov, F, freq_kernel, time_kernel, dilation=1, ch_hid=24):
         super().__init__()
         
         self.ch=ch
