@@ -86,7 +86,9 @@ def compute_covar(obs, tf_mask):
 def smmoth_covar(covar_mat, len_win):
     F, N, _ = covar_mat.shape
     covar_mat = np.reshape(covar_mat, (F, N*N))
-    covar_mat = np.dot(get_win(len_win, F), covar_mat)
+    win=get_win(len_win, F)
+    print(win.shape, covar_mat.shape)
+    covar_mat = np.dot(win, covar_mat)
     return np.reshape(covar_mat, (F, N, N))
 
 def get_win(len_win, F):
@@ -95,7 +97,7 @@ def get_win(len_win, F):
     win_sum = np.reshape(np.sum(np.abs(win), axis=1), (win.shape[0]))
     win_sum = np.tile(win_sum, (win.shape[1], 1))
     win = win / np.transpose(win_sum)
-    return win
+    return win.astype(np.complex64)
 
 
 def beam_pattern(weight, steer_vector):
@@ -229,6 +231,7 @@ class OnlineSupervisedBeamformer(SupervisedBeamformer):
                                     obs)
         Rn = smmoth_covar(Rn, self.win_s)
         Rs = self.compute_covar_mat(mask_s, obs)
+        
         Rs = smmoth_covar(Rs, self.win_s)
 
         # update stats

@@ -14,10 +14,7 @@ from scipy.io import loadmat
 from pathlib import Path
 from libs.utils import forward_stft, inverse_stft_reserve, get_logger, nextpow2, cmat_abs
 from libs.cluster import CgmmTrainer, permu_aligner
-from libs.data_handler import WaveWriter, SegmentSpecReader, WaveReader
-from libs.beamformer import OnlineGevdBeamformer, OnlineMvdrBeamformer
-from libs.conf import beamformer_online_conf, stft_conf
-from visualize_tf_matrix import save_figure
+from libs.beamformer import OnlineMvdrBeamformer
 import scipy.io as scio
 
 logger = get_logger('./log/beamformer_mvdr_online2.log', file=True)
@@ -91,7 +88,7 @@ def estimate_masks(stft_mat, init_mask, Rn_init, update_alpha, num_iters, key, n
     except RuntimeError:
         logger.warn(f"Training utterance {key} ... Failed")
 
-def run(stft_kwargs, block_size, samps, sr, ban, vad_proportion, alpha,
+def run(stft_kwargs, samps, sr, ban, vad_proportion, alpha,
         chunk_size, channels, mask_alpha, num_iters, solve_permu):
     round_power_of_two = stft_kwargs.pop('round_power_of_two')
     frame_len = stft_kwargs['frame_len']
@@ -108,31 +105,27 @@ def run(stft_kwargs, block_size, samps, sr, ban, vad_proportion, alpha,
                 f"chunk size = {chunk_size:d}")
 
     wav_result=[]
-    SegSpectrogram_reader = SegmentSpecReader(
-        wav_scp, normalize=True,
-        round_power_of_two=round_power_of_two, **stft_kwargs)
-
     num_done = 0
     
-    samps=samps[..., samps.shape[-1]//frame_hop*frame_hop]
+    samps=samps[..., :samps.shape[-1]//frame_hop*frame_hop]
     
     xlen = samps.shape[-1]
     nframes = int((xlen - frame_len)/frame_hop) + 1
 
     # init params
-    cnt = 0, 0
-    enh_samps, = []
-    init_mask = np.ones((num_bins, chunk_size), dtype=np.complex64)
+    cnt = 0
+    enh_samps = []
+    init_mask = None # np.ones((num_bins, chunk_size), dtype=np.complex64)
     
-    _,_,stft_result=forward_stft(samps, **stft_kwargs) # N, F, T
+    stft_result=np.stack([forward_stft(samps[i], **stft_kwargs) for i in range(samps.shape[0])], axis=0) # N, F, T
     stft_result=stft_result[:, :num_bins, :]
     assert(nframes==stft_result.shape[-1])
            
     stft_mat = np.zeros((channels, num_bins, chunk_size), dtype=np.complex64)
     count = 0
+    Rn_init=None
     while cnt < nframes :
         print('count is', count)
-        end_idx = start_idx + block_size
         # read data and stft
         stft_mat_c = stft_result[:,:,cnt:cnt+1]
         nframe_c = stft_mat_c.shape[-1] # 1
@@ -144,7 +137,7 @@ def run(stft_kwargs, block_size, samps, sr, ban, vad_proportion, alpha,
         # estimate masks using cgmm online -> K x T x F
         try:
             masks_c, Rn_c = estimate_masks(stft_mat, init_mask, Rn_init, mask_alpha,
-                                   num_iters, key, num_classes=2)
+                                   num_iters, cnt, num_classes=2)
             Rn_init = Rn_c
         except RuntimeError:
             logger.warn(f"Training utterance in {cnt}-th block ... Failed")
@@ -156,14 +149,13 @@ def run(stft_kwargs, block_size, samps, sr, ban, vad_proportion, alpha,
 
         # only store the interf_mask
         speech_mask_c, interf_mask_c = filter_masks(stft_mat, None, masks_c[1], vad_proportion)
-        
         # online mvdr beamforming
         chunk = beamformer.run(speech_mask_c, stft_mat, mask_n=interf_mask_c, ban=ban) # [F, chunk_size]
         enh_chunks = inverse_stft(chunk[:, -nframe_c:], **stft_kwargs)
         enh_samps.append(enh_chunks)
         reserve_init = reserve_c
         # enh_samps.append(chunk[:, -nframe_c:])   # -> add the frame_chunk
-
+        
         start_idx = end_idx
         cnt += nframe_c
         count += 1
@@ -177,5 +169,5 @@ def run(stft_kwargs, block_size, samps, sr, ban, vad_proportion, alpha,
     return enh_samps
 
 
-def apply_online_beamformer(samps):
-    run(stft_conf, block_size, samps, **beamformer_online_conf)
+def apply_online_beamformer(samps, stft_conf, beamformer_conf):
+    run(stft_conf, samps, **beamformer_conf)
