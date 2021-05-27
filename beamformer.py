@@ -152,10 +152,15 @@ class minimum_variance_distortioless_response:
         beamformer = np.ones((self.n_mic, len(frequency_grid)), dtype=np.complex64)
         for f in range(0, len(frequency_grid)):
             R_cut = np.reshape(R[:, :, f], [self.n_mic, self.n_mic])
-            inv_R = np.linalg.pinv(R_cut)
+            try:
+                inv_R = np.linalg.pinv(R_cut)
+            except:
+                return None
             a = np.matmul(np.conjugate(steering_vector[:, f]).T, inv_R)
             b = np.matmul(a, steering_vector[:, f])
             b = np.reshape(b, [1, 1])
+            if b==0:
+                return None
             beamformer[:, f] = np.matmul(inv_R, steering_vector[:, f]) / b # number_of_mic *1   = number_of_mic *1 vector/scalar        
         return beamformer
     
@@ -203,8 +208,8 @@ class WebrtcBeamformer:
         wavfile.write(path, 48000, signal)
         os.system(self.webrtc_path+' '+ path + ' ' + str(int(angle*180/np.pi)+180) + ' ' + self.temp_folder+'/layout.txt ' + dest + ' ' + str(self.buffer_size))
         # normalize
-        return self.__normalize(wavfile.read(dest)[1][self.buffer_size//2:], 1)
-        #return wavfile.read(dest)[1][self.buffer_size//2:]
+        #return self.__normalize(wavfile.read(dest)[1][self.buffer_size//2:], 1)
+        return wavfile.read(dest)[1][self.buffer_size//2:]/32768.0
 
     
 class OnlineMVDRBeamformer:
@@ -267,11 +272,12 @@ class OnlineMVDRBeamformer:
         length=signal.shape[0]
         v=self.__get_steering_vector(angle, self.sr, self.buffer_size)
         corr=None
-        F=0.95
+        diag=0.05
         result=np.zeros((length,))
         spec_size=complex_spectrum.shape[1]
         beamformers=np.zeros((spec_size, self.n_mic, complex_spectrum.shape[2]), dtype=np.complex64)
         
+        D=np.tile(diag*np.identity(self.n_mic).reshape((self.n_mic, self.n_mic, 1)), (1,1,self.buffer_size//2+1))
         if self.adaptive:
             for i in range(spec_size):
                 newcorr=beamformer.get_spatial_correlation_matrix(signal[i*step_size:(i*step_size+self.buffer_size)])
@@ -279,8 +285,13 @@ class OnlineMVDRBeamformer:
                     if corr is None:
                         corr=newcorr
                     else:
-                        corr=corr*F+(1-F)*newcorr
-                    beamformers[i]=beamformer.get_mvdr_beamformer(v, corr)
+                        corr=corr+newcorr
+                    beamformers[i]=beamformer.get_mvdr_beamformer(v, corr/(i+1)*(1-diag)+D)
+                    if beamformers[i] is None or np.isnan(beamformers[i]).any() or np.isinf(beamformers[i]).any():
+                        if i>0:
+                            beamformers[i]=beamformers[i-1]
+                        else:
+                            beamformers[i]=v
                 else:
                     if corr is None:
                         corr=newcorr
@@ -294,6 +305,6 @@ class OnlineMVDRBeamformer:
         else:
             bf=beamformer.get_mvdr_beamformer(v, self.corr)
             result=beamformer.apply_beamformer(bf, complex_spectrum)
-        return self.__normalize(result, 1)
+        return result #self.__normalize(result, 1)
         
         

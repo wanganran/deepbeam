@@ -61,7 +61,7 @@ class ModTanh(torch.nn.Module):
         
     def forward(self, x, eps=1e-4):
         x_re, x_im = x[:, 0], x[:, 1]
-        norm = torch.sqrt(x_re ** 2 + x_im ** 2 + eps)
+        norm = torch.sqrt(x_re ** 2 + x_im ** 2 + eps ** 2)
         phase_re, phase_im = x_re / norm, x_im / norm
         activated_norm = torch.tanh(norm)
         return torch.stack(
@@ -171,7 +171,7 @@ class ComplexSTFTWrapper(nn.Module):
                               
     def reverse(self, input_data):
         B,_,C,F,T=input_data.shape
-        input_data=input_data.permute(0,2,3,4,1).view(B*C,F,T,2)
+        input_data=input_data.permute(0,2,3,4,1).reshape(B*C,F,T,2)
         r=torch.istft(input_data, n_fft=self.win_length, hop_length=self.hop_length, center=self.center, return_complex=False) # B, L
         return r.view(B,C,-1)
         

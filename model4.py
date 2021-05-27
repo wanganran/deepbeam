@@ -44,6 +44,7 @@ def cLog(tensor):
     return torch.stack([real, imag], dim=1)
 
 
+
 class cLN(nn.Module):
     def __init__(self, eps=1e-8, withbias=False):
         super(cLN, self).__init__()
@@ -87,6 +88,16 @@ class cLN(nn.Module):
             x = input / cum_std.expand_as(input)
         return x
 
+class cLN_2d(nn.Module):
+    def __init__(self, eps=1e-8, withbias=False):
+        super().__init__()
+        self.cln=cLN(eps, withbias)
+        
+    def forward(self, input):
+        input=input.permute(0,3,1,2,4) # B,F, 2, C, T
+        B,F,_,C,T=input.shape
+        output=self.cln(input.flatten(0,1)).view(B,F,2,C,T)
+        return output.permute(0,2,3,1,4)
 
 class TrainableSTFTWrapper(nn.Module): # assume same win_length and hop_length
     def __init__(self, win_length):
@@ -495,84 +506,136 @@ class NaiveModel2(nn.Module):
     
     
 class NaiveModel3(nn.Module):
-    def __init__(self, ch_in, ch_hidden, block_size):
+    def __init__(self, ch_in, ch_hidden, ch_mid, block_size):
         super().__init__()
         self.stft=ComplexSTFTWrapper(hop_length=block_size//2, win_length=block_size)
         self.freq=block_size//2+1
-        self.freq_shuffle=ComplexConv2d(self.freq, self.freq, (1,1))
-        self.freq_rec=ComplexConv2d(self.freq, self.freq, (1,1))
+        self.freq_shuffle1=ComplexConv2d(self.freq, self.freq, (1,1))
+        self.freq_rec1=ComplexConv2d(self.freq, self.freq, (1,1))
+        self.freq_shuffle2=ComplexConv2d(self.freq, self.freq, (1,1))
+        self.freq_rec2=ComplexConv2d(self.freq, self.freq, (1,1))
         
         self.conv1r=ComplexConv2d(ch_in, ch_hidden, (1,1))
-        self.conv1i=ComplexConv2d(ch_hidden, ch_hidden, (1,1))
-        self.conv2r=ComplexConv2d(ch_hidden, ch_hidden, (1,8), padding=(0,7))
-        self.conv2i=ComplexConv2d(ch_hidden, ch_hidden, (1,8), padding=(0,7))
-        self.act1=TReLU((ch_hidden, self.freq, 1))
-        self.act2=TReLU((ch_hidden, self.freq, 1))
+        self.conv1i=ComplexConv2d(ch_hidden, ch_mid, (1,1))
+        self.conv2r=ComplexConv2d(ch_mid, ch_hidden, (1,4), padding=(0,3))
+        self.conv2i=ComplexConv2d(ch_hidden, ch_mid, (1,4), padding=(0,3))
+        self.conv3r=ComplexConv2d(ch_mid, ch_hidden, (1,4), dilation=(1,4), padding=(0,12))
+        self.conv3i=ComplexConv2d(ch_hidden, ch_mid, (1,4), dilation=(1,4), padding=(0,12))
+        self.act1=TReLU((ch_mid, self.freq, 1))
+        self.act2=TReLU((ch_mid, self.freq, 1))
+        self.act3=TReLU((ch_mid, self.freq, 1))
         
-        self.conv3r=ComplexConv2d(ch_in, ch_hidden, (1,1))
-        self.conv3i=ComplexConv2d(ch_hidden, ch_hidden, (1,1))
-        self.conv4r=ComplexConv2d(ch_hidden, ch_hidden, (1,8), padding=(0,7))
-        self.conv4i=ComplexConv2d(ch_hidden, ch_hidden, (1,8), padding=(0,7))
-        self.act3=TReLU((ch_hidden, self.freq, 1))
-        self.act4=TReLU((ch_hidden, self.freq, 1))
+        self.conv4r=ComplexConv2d(ch_in, ch_hidden, (1,1))
+        self.conv4i=ComplexConv2d(ch_hidden, ch_mid, (1,1))
+        self.conv5r=ComplexConv2d(ch_mid, ch_hidden, (1,4), padding=(0,3))
+        self.conv5i=ComplexConv2d(ch_hidden, ch_mid, (1,4), padding=(0,3))
+        self.conv6r=ComplexConv2d(ch_mid, ch_hidden, (1,4), dilation=(1,4), padding=(0,12))
+        self.conv6i=ComplexConv2d(ch_hidden, ch_mid, (1,4), dilation=(1,4), padding=(0,12))
+        self.act4=TReLU((ch_mid, self.freq, 1))
+        self.act5=TReLU((ch_mid, self.freq, 1))
+        self.act6=TReLU((ch_mid, self.freq, 1))
         
-        self.final1=ComplexConv2d(ch_hidden, ch_in, (1,1))
-        self.final2=ComplexConv2d(ch_hidden, 1, (1,1))
+        self.final1=ComplexConv2d(ch_mid, 1, (1,1))
+        self.final2=ComplexConv2d(ch_mid, ch_in, (1,1))        
         
-        self.convw1=ComplexConv2d(ch_in*ch_in, ch_hidden, (1,1))
-        self.convw2=ComplexConv2d(ch_hidden, ch_hidden, (1,1))
-        self.convw3=ComplexConv2d(ch_hidden, ch_hidden, (1,8), padding=(0,7))
-        self.convw4=ComplexConv2d(ch_hidden, 1, (1,1))
+        self.convw=nn.Sequential(
+            ComplexConv2d(ch_in+2, ch_hidden, (1,1)),
+            nn.LeakyReLU(),
+            ComplexConv2d(ch_hidden, ch_mid, (1,4), padding=(0,3)),
+            TReLU((ch_mid, self.freq, 1)),
+            ComplexConv2d(ch_mid, 1, (1,1))
+        )
         self.actw=TGate((1, self.freq, 1))
         
         self.loss_fn=nn.L1Loss()
-        
+            
     def forward(self, mix):
         ts=self.stft.transform(mix) # B, 2, C, F, T
-        ts=self.freq_shuffle(ts.permute(0,1,3,2,4)).permute(0,1,3,2,4)
         
-        tl=ts
+        tl=self.freq_shuffle1(ts.permute(0,1,3,2,4)).permute(0,1,3,2,4)
+        
         tl=self.conv1r(tl)
         tl=F.leaky_relu(tl)
         tl=self.conv1i(tl)
         tl=self.act1(tl)
-        tl=self.conv2r(tl)[..., :-7]
+        tl=self.conv2r(tl)[..., :-3]
         tl=F.leaky_relu(tl)
-        tl=self.conv2i(tl)[..., :-7]
+        tl=self.conv2i(tl)[..., :-3]
         tl=self.act2(tl)
-        tl=self.final1(tl)        
-        td1=torch.sum(ts-tl, dim=2, keepdim=True)/ts.shape[2]
-        
-        tl=ts
-        tl=self.conv3r(tl)
+        tl=self.conv3r(tl)[..., :-12]
         tl=F.leaky_relu(tl)
-        tl=self.conv3i(tl)
+        tl=self.conv3i(tl)[..., :-12]
         tl=self.act3(tl)
-        tl=self.conv4r(tl)[..., :-7]
+        tl=self.final1(tl)
+        td1=self.freq_rec1(tl.permute(0,1,3,2,4)).permute(0,1,3,2,4)
+        
+        tl=self.freq_shuffle2(ts.permute(0,1,3,2,4)).permute(0,1,3,2,4)
+        
+        tl=self.conv4r(tl)
         tl=F.leaky_relu(tl)
-        tl=self.conv4i(tl)[..., :-7]
+        tl=self.conv4i(tl)
         tl=self.act4(tl)
-        td2=self.final2(tl)
+        tl=self.conv5r(tl)[..., :-3]
+        tl=F.leaky_relu(tl)
+        tl=self.conv5i(tl)[..., :-3]
+        tl=self.act5(tl)
+        tl=self.conv6r(tl)[..., :-12]
+        tl=F.leaky_relu(tl)
+        tl=self.conv6i(tl)[..., :-12]
+        tl=self.act6(tl)
+        tl=self.final2(tl)
+        tl=torch.sum(ts-tl, dim=2, keepdim=True)/ts.shape[2]
+        td2=self.freq_rec2(tl.permute(0,1,3,2,4)).permute(0,1,3,2,4)
         
-        tl=modLog(cov_complex(ts))
-        tl=self.convw1(tl)
-        tl=F.leaky_relu(tl)
-        tl=self.convw2(tl)
-        tl=F.leaky_relu(tl)
-        tl=self.convw3(tl)[..., :-7]
-        tl=F.leaky_relu(tl)
-        tl=self.convw4(tl)
-        tw=self.actw(tl).unsqueeze(1)
-        
+        tw=self.actw(self.convw(torch.cat([ts, td1, td2], dim=2))[..., :-3]).unsqueeze(1)
         td=td1*tw+td2*(1-tw)
-        
-        t=self.freq_rec(td.permute(0,1,3,2,4)).permute(0,1,3,2,4)
-        
-        return self.stft.reverse(t)
-    
+            
+        return self.stft.reverse(td)
     
     def loss(self, signal, gt, mix):
         return torch.sum(self.loss_fn(signal[..., 24000:], gt[..., 24000:]))
+    
+class FuseModel(nn.Module):
+    def __init__(self, ch_in, ch_bf, ch_mid, ch_hid, k_reception, k_mid, naivemodel):
+        super().__init__()
+        
+        self.ch_in=ch_in
+        self.ch_bf=ch_bf
+        
+        self.naivemodel=naivemodel
+        self.conv1=CausalComplexConv1d(ch_bf+2, ch_mid, k_reception, fullconv=True)
+        self.act1=nn.LeakyReLU()
+        self.tcn1=CausalTCN(ch_mid, ch_mid, ch_hid, 1, k_mid)
+        self.tcn2=CausalTCN(ch_mid, ch_mid, ch_hid, k_mid, k_mid)
+        self.tcn3=CausalTCN(ch_mid, ch_mid, ch_hid, k_mid*k_mid, k_mid)
+        self.tcn4=CausalTCN(ch_mid, ch_mid, ch_hid, k_mid*k_mid*k_mid, k_mid)
+        self.act2=TReLU((ch_mid, 1))
+        self.final=ComplexConv1d(ch_mid, ch_mid, 1)
+        #self.gate=TGate((ch_mid, 1))
+        self.gate=ModTanh()
+        self.conv2=CausalComplexConvTrans1d(ch_mid, 1, k_reception, fullconv=True)
+        
+    def forward(self, tensor):
+        #with torch.no_grad():
+        naive_out=self.naivemodel(tensor[:, :self.ch_in].contiguous()) # B, C, L
+        
+        t=torch.cat([tensor[:, self.ch_in:], naive_out, tensor[:, 0:1]], dim=1) # B, 5, L
+        t=toComplex(t) # B,2, C+1, L
+        
+        t=self.conv1(t)
+        tp=t
+        t=self.act1(t)
+        t=self.tcn1(t)
+        t=self.tcn2(t)
+        t=self.tcn3(t)
+        t=self.tcn4(t)
+        t=self.act2(t)
+        t=self.final(t)
+        t=self.gate(t)
+        
+        t=cMul(t,tp)
+        t=self.conv2(t) # B, 2, 1, L
+        return toReal(t)
     
 class NaiveModel(nn.Module):
     def __init__(self, ch_in, ch_hidden, block_size):
@@ -669,7 +732,7 @@ class CausalTCN(nn.Module):
         super().__init__()
         
         self.layers=nn.ModuleList()
-        self.layers.append(CausalComplexConv1d(in_channels, hidden_channels, kernel, dilation=dilation, activation=activation, fullconv=True))
+        self.layers.append(CausalComplexConv1d(in_channels, hidden_channels, kernel, dilation=dilation, activation=activation))
         self.layers.append(activation)
         self.layers.append(ComplexConv1d(hidden_channels, out_channels, 1))
         
