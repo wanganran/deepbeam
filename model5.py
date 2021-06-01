@@ -115,7 +115,7 @@ class FuseModel(nn.Module):
         t=self.tcn1(t)
         t=t+self.tcn2(t)
         t=t+self.tcn3(t)
-        t=t+self.tcn4(t)
+        t=self.tcn4(t)
         
         t=self.act(t)
         t=self.final(t)
