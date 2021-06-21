@@ -286,12 +286,16 @@ class OnlineMVDRBeamformer:
                         corr=newcorr
                     else:
                         corr=corr+newcorr
-                    beamformers[i]=beamformer.get_mvdr_beamformer(v, corr/(i+1)*(1-diag)+D)
-                    if beamformers[i] is None or np.isnan(beamformers[i]).any() or np.isinf(beamformers[i]).any():
-                        if i>0:
-                            beamformers[i]=beamformers[i-1]
-                        else:
-                            beamformers[i]=v
+                    if i%5==0:
+                        beamformers[i]=beamformer.get_mvdr_beamformer(v, corr/(i+1)*(1-diag)+D)
+                        if beamformers[i] is None or np.isnan(beamformers[i]).any() or np.isinf(beamformers[i]).any():
+                            if i>0:
+                                beamformers[i]=beamformers[i-1]
+                            else:
+                                beamformers[i]=v
+                    else:
+                        beamformers[i]=beamformers[i-1]
+                        
                 else:
                     if corr is None:
                         corr=newcorr
